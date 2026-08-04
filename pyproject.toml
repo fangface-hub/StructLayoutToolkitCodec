@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "sltcalc>=0.1.0",
-    "sltcore>=1.0.0",
+    "sltcore>=1.1.1",
 ]
 license = "MIT"
 license-files = ["LICENSE"]

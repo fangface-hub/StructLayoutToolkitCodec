@@ -63,23 +63,46 @@ def test_encode_recurses_for_nested_field_types():
                  size=InfoSize(1, 0),
                  type="unsigned int"),
     ]
-    field_def_dict = {"pair": child_field_defs}
     parent_field_def = FieldDef(name="pair",
                                 offset=InfoSize(0, 0),
                                 size=InfoSize(2, 0),
-                                type="pair")
+                                type=child_field_defs)
     child_values = [
         (child_field_defs[0], 3),
         (child_field_defs[1], 4),
     ]
 
-    encoded = encode([(parent_field_def, child_values)], field_def_dict)
+    encoded = encode([(parent_field_def, child_values)])
 
     assert encoded == bytearray(b"\x03\x04")
-    decoded = decode([parent_field_def], encoded, field_def_dict)
+    decoded = decode([parent_field_def], encoded)
 
     assert decoded[0][0] == parent_field_def
     assert [(field_def.name, value) for field_def, value in decoded[0][1]] == [
-        ("left", b"\x03"),
-        ("right", b"\x04"),
+        ("left", 3),
+        ("right", 4),
     ]
+
+
+def test_type_expression_uses_previous_field_value():
+    """Test that a type expression can depend on a previously decoded field."""
+    field_defs = [
+        FieldDef(name="kind",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="payload",
+                 offset=InfoSize(1, 0),
+                 size="{1: 1, 2: 4}[kind]",
+                 type="{1: 'int', 2: 'float'}[kind]"),
+    ]
+
+    encoded_int = encode([(field_defs[0], 1), (field_defs[1], 7)])
+    decoded_int = decode(field_defs, encoded_int)
+    assert decoded_int == [(field_defs[0], 1), (field_defs[1], 7)]
+
+    encoded_float = encode([(field_defs[0], 2), (field_defs[1], 1.5)])
+    decoded_float = decode(field_defs, encoded_float)
+    assert decoded_float[0] == (field_defs[0], 2)
+    assert decoded_float[1][0] == field_defs[1]
+    assert decoded_float[1][1] == 1.5

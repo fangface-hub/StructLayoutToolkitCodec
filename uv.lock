@@ -89,7 +89,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "sltcalc", specifier = ">=0.1.0" },
-    { name = "sltcore", specifier = ">=1.0.0" },
+    { name = "sltcore", specifier = ">=1.1.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -97,9 +97,9 @@ dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "sltcore"
-version = "1.0.0"
+version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b1/02/bc7d8d2c6461993a762b176575dcc1cf57c63619e5337390dd582646d276/sltcore-1.0.0.tar.gz", hash = "sha256:5e5b09e77b6ea67e81b75066ef48b49f50762543b3fb612393ef1e795b30cefe", size = 14869, upload-time = "2026-08-02T15:03:31.644Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e0/e0/6ecf52db7f506cf093c4aa6cbc3907129d2982105a93173ad8f9bd6897d3/sltcore-1.1.1.tar.gz", hash = "sha256:41814c313db914ea1305cbf69430a78eacbc61ac0940ac29ccf0fec12cd1855e", size = 15405, upload-time = "2026-08-04T14:17:01.123Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/9c/5d29690d88ca70ac0f7d9e1d288ca81da744581352576f861ea8470be3c5/sltcore-1.0.0-py3-none-any.whl", hash = "sha256:63f259ee50d6acdb13d017f728bfd6aed9b9ffea33ca89f85b63ec748aed6268", size = 8333, upload-time = "2026-08-02T15:03:30.721Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/2b/7f5c45ee9d25edfcdb95dd4017caab91bd8cc41cb9beb0d466d27998dd9b/sltcore-1.1.1-py3-none-any.whl", hash = "sha256:ff001265f985e75122825661a387019e765b28c3aefd95e90ad3174e89e2f49e", size = 8716, upload-time = "2026-08-04T14:17:00.271Z" },
 ]

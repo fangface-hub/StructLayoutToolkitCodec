@@ -135,6 +135,64 @@ def test_field_def_dict_load_and_save(tmp_path: Path):
     assert loaded["value"] == field_def
 
 
+def test_encode_and_decode_accept_parallel_count_for_repeated_fields():
+    """Test that repeated-field encode/decode works with parallel_count."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         repeat=4)
+
+    encoded = encode([(field_def, [1, 2, 3, 4])], parallel_count=2)
+    decoded = decode([field_def], encoded, parallel_count=2)
+
+    assert encoded == bytearray(b"\x01\x02\x03\x04")
+    assert decoded == [
+        (FieldDef(name="value[0]",
+                  offset=InfoSize(0, 0),
+                  size=InfoSize(1, 0),
+                  type="unsigned int"), 1),
+        (FieldDef(name="value[1]",
+                  offset=InfoSize(1, 0),
+                  size=InfoSize(1, 0),
+                  type="unsigned int"), 2),
+        (FieldDef(name="value[2]",
+                  offset=InfoSize(2, 0),
+                  size=InfoSize(1, 0),
+                  type="unsigned int"), 3),
+        (FieldDef(name="value[3]",
+                  offset=InfoSize(3, 0),
+                  size=InfoSize(1, 0),
+                  type="unsigned int"), 4),
+    ]
+
+
+def test_parallel_count_falls_back_for_env_dependent_repeated_fields():
+    """Test that env-dependent repeated fields stay sequential."""
+    seed_field = FieldDef(name="seed",
+                          offset=InfoSize(0, 0),
+                          size=InfoSize(1, 0),
+                          type="unsigned int")
+    repeated_field = FieldDef(name="value",
+                              offset="{1: 0, 2: 1}[seed]",
+                              size=InfoSize(1, 0),
+                              type="unsigned int",
+                              repeat=2)
+
+    encoded = encode([(seed_field, 2), (repeated_field, [5, 6])],
+                     parallel_count=2)
+    decoded = decode([seed_field, repeated_field], encoded, parallel_count=2)
+
+    assert encoded == bytearray(b"\x02\x05\x06")
+    assert decoded[0] == (seed_field, 2)
+    assert decoded[1][0].name == "value[0]"
+    assert decoded[1][0].offset == InfoSize(1, 0)
+    assert decoded[1][1] == 5
+    assert decoded[2][0].name == "value[1]"
+    assert decoded[2][0].offset == InfoSize(2, 0)
+    assert decoded[2][1] == 6
+
+
 def test_type_expression_uses_previous_field_value():
     """Test that a type expression can depend on a previously decoded field."""
     field_defs = [

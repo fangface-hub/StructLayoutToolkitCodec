@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,66 @@ def _encode_primitive(field_type: str, value: Any, size: InfoSize,
     return Info(raw_value=value, info_size=size, scale=scale)
 
 
+def _prepare_field_info(
+    field_def: FieldDef,
+    value: Any,
+    env: dict[str, Any],
+    field_def_dict: dict[str, Any] | None = None
+) -> tuple[InfoSize, InfoSize, Info] | None:
+    """Resolve a field definition into an offset, size, and info payload."""
+    offset = _resolve_offset(field_def, env)
+    size = _resolve_size(field_def, env)
+    if size.byte == 0 and size.bit == 0:
+        return None
+
+    resolved_type = _resolve_field_type(field_def.type, field_def_dict, env)
+    if isinstance(resolved_type, list):
+        nested_bytes = encode(list(value), field_def_dict)
+        info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
+    else:
+        info = _encode_primitive(resolved_type, value, size, field_def.scale)
+    return offset, size, info
+
+
+def _normalize_parallel_count(parallel_count: int) -> int:
+    """Validate and normalize the requested parallel count."""
+    if parallel_count < 1:
+        raise ValueError("parallel_count must be greater than or equal to 1")
+    return parallel_count
+
+
+def _split_repeated_field(field_def: FieldDef,
+                          index: int,
+                          env: dict[str, Any],
+                          offset: InfoSize | str | None = None) -> FieldDef:
+    """Create a repeated-field definition with resolved offset and size."""
+    resolved_offset = (_resolve_offset(field_def, env)
+                       if offset is None else offset)
+    resolved_size = _resolve_size(field_def, env)
+    return FieldDef(name=f"{field_def.name}[{index}]",
+                    offset=resolved_offset,
+                    size=resolved_size,
+                    type=field_def.type,
+                    scale=field_def.scale,
+                    repeat=None,
+                    description=field_def.description)
+
+
+def _can_parallelize_repeated_field(field_def: FieldDef,
+                                    current_offset: InfoSize | None) -> bool:
+    """Check whether repeated-field processing can be parallelized safely."""
+    if current_offset is None:
+        return False
+    if isinstance(field_def.offset, str):
+        return False
+    if isinstance(field_def.size, str):
+        return False
+    if (isinstance(field_def.type, str)
+            and field_def.type not in _PRIMITIVE_TYPES):
+        return False
+    return True
+
+
 def encode_field(field_def: FieldDef,
                  value: Any,
                  buf: bytearray,
@@ -210,26 +271,21 @@ def encode_field(field_def: FieldDef,
     if env is None:
         env = {}
 
-    offset = _resolve_offset(field_def, env)
-    size = _resolve_size(field_def, env)
-    if size.byte == 0 and size.bit == 0:
+    prepared = _prepare_field_info(field_def, value, env, field_def_dict)
+    if prepared is None:
         return
 
+    offset, size, info = prepared
     required_bytes = (offset + size).bytes
     if len(buf) < required_bytes:
         buf.extend(b"\x00" * (required_bytes - len(buf)))
 
-    resolved_type = _resolve_field_type(field_def.type, field_def_dict, env)
-    if isinstance(resolved_type, list):
-        nested_bytes = encode(list(value), field_def_dict)
-        info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
-    else:
-        info = _encode_primitive(resolved_type, value, size, field_def.scale)
     bits_set(buf, offset, info)
 
 
 def encode(result: list[tuple[FieldDef, Any]],
-           field_def_dict: dict[str, Any] | None = None) -> bytearray:
+           field_def_dict: dict[str, Any] | None = None,
+           parallel_count: int = 1) -> bytearray:
     """Encode decode() result into a bytearray.
 
     Parameters
@@ -244,22 +300,59 @@ def encode(result: list[tuple[FieldDef, Any]],
     bytearray
         The encoded bytearray.
     """
+    parallel_count = _normalize_parallel_count(parallel_count)
     buf = bytearray()
     env: dict[str, Any] = {}
 
     for field_def, value in result:
         if field_def.repeat is not None and field_def.repeat > 1:
             current_offset = _resolve_offset(field_def, env)
+            resolved_size = _resolve_size(field_def, env)
             values = list(value)
 
+            if (parallel_count > 1 and isinstance(current_offset, InfoSize)
+                    and isinstance(field_def.size, InfoSize) and
+                    _can_parallelize_repeated_field(field_def, current_offset)):
+                offsets: list[InfoSize] = []
+                offset_cursor = current_offset
+                for _ in range(field_def.repeat):
+                    offsets.append(offset_cursor)
+                    offset_cursor += resolved_size
+
+                repeated_fields = [
+                    _split_repeated_field(field_def, index, env, offsets[index])
+                    for index in range(field_def.repeat)
+                ]
+
+                with ThreadPoolExecutor(max_workers=parallel_count) as executor:
+                    futures = [
+                        executor.submit(_prepare_field_info,
+                                        repeated_fields[index], values[index],
+                                        env.copy(), field_def_dict)
+                        for index in range(field_def.repeat)
+                    ]
+                    prepared_results = [future.result() for future in futures]
+
+                for index, prepared in enumerate(prepared_results):
+                    if prepared is None:
+                        continue
+                    offset, size, info = prepared
+                    required_bytes = (offset + size).bytes
+                    if len(buf) < required_bytes:
+                        buf.extend(b"\x00" * (required_bytes - len(buf)))
+                    bits_set(buf, offset, info)
+                    env[repeated_fields[index].name] = values[index]
+                continue
+
             for i in range(field_def.repeat):
-                field_def_repeat = field_def.split_repeat(i, current_offset)
+                field_def_repeat = _split_repeated_field(
+                    field_def, i, env, current_offset)
                 encode_field(field_def_repeat, values[i], buf, env,
                              field_def_dict)
                 env[field_def_repeat.name] = values[i]
                 if isinstance(current_offset, InfoSize) and isinstance(
-                        field_def.size, InfoSize):
-                    current_offset += field_def.size
+                        resolved_size, InfoSize):
+                    current_offset += resolved_size
             continue
 
         encode_field(field_def, value, buf, env, field_def_dict)
@@ -312,11 +405,10 @@ def decode_field(field_def: FieldDef,
     return info.raw_value
 
 
-def decode(
-        field_defs: list[FieldDef],
-        data: bytearray | bytes,
-        field_def_dict: dict[str, Any] | None = None
-) -> list[tuple[FieldDef, Any]]:
+def decode(field_defs: list[FieldDef],
+           data: bytearray | bytes,
+           field_def_dict: dict[str, Any] | None = None,
+           parallel_count: int = 1) -> list[tuple[FieldDef, Any]]:
     """Decode a bytearray into field values according to a layout.
 
     Parameters
@@ -332,6 +424,7 @@ def decode(
     list[tuple[FieldDef, Any]]
         The decoded field values.
     """
+    parallel_count = _normalize_parallel_count(parallel_count)
     result: list[tuple[FieldDef, Any]] = []
     env = {}
 
@@ -344,16 +437,46 @@ def decode(
                 result.append((field_def, value))
             continue
         # Handle repeated fields
-        current_offset = field_def.offset
+        current_offset = _resolve_offset(field_def, env)
+        resolved_size = _resolve_size(field_def, env)
+        if (parallel_count > 1 and isinstance(current_offset, InfoSize)
+                and isinstance(field_def.size, InfoSize)
+                and _can_parallelize_repeated_field(field_def, current_offset)):
+            offsets: list[InfoSize] = []
+            offset_cursor = current_offset
+            for _ in range(field_def.repeat):
+                offsets.append(offset_cursor)
+                offset_cursor += resolved_size
+
+            repeated_fields = [
+                _split_repeated_field(field_def, index, env, offsets[index])
+                for index in range(field_def.repeat)
+            ]
+
+            with ThreadPoolExecutor(max_workers=parallel_count) as executor:
+                futures = [
+                    executor.submit(decode_field, repeated_fields[index], data,
+                                    env.copy(), field_def_dict)
+                    for index in range(field_def.repeat)
+                ]
+                decoded_values = [future.result() for future in futures]
+
+            for index, value in enumerate(decoded_values):
+                if value is not None:
+                    env[repeated_fields[index].name] = value
+                    result.append((repeated_fields[index], value))
+            continue
+
         for i in range(field_def.repeat):
-            field_def_repeat = field_def.split_repeat(i, current_offset)
+            field_def_repeat = _split_repeated_field(field_def, i, env,
+                                                     current_offset)
             value = decode_field(field_def_repeat, data, env, field_def_dict)
             if value is not None:
                 env[field_def_repeat.name] = value
                 result.append((field_def_repeat, value))
             if isinstance(current_offset, InfoSize) and isinstance(
-                    field_def.size, InfoSize):
-                current_offset += field_def.size
+                    resolved_size, InfoSize):
+                current_offset += resolved_size
 
     return result
 

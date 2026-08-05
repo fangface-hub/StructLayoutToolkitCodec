@@ -1,7 +1,9 @@
 """Encoding and decoding of structured layouts into bytearrays."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from sltcalc import SltEval
@@ -33,6 +35,111 @@ class FieldDef:
                          metadata={"desc": "The scale of the field"})
     repeat: int | None = field(
         default=None, metadata={"desc": "The repeat count of the field"})
+    description: str | None = field(
+        default=None, metadata={"desc": "The description of the field"})
+
+    def split_repeat(self,
+                     index: int,
+                     offset: InfoSize | str | None = None) -> "FieldDef":
+        """Create a single repeated-field definition for the given index.
+
+        Parameters
+        ----------
+        index : int
+            The index of the repeated field.
+        offset : InfoSize | str | None, optional
+            The offset of the repeated field, by default None.
+        """
+        return FieldDef(name=f"{self.name}[{index}]",
+                        offset=self.offset if offset is None else offset,
+                        size=self.size,
+                        type=self.type,
+                        scale=self.scale,
+                        repeat=None,
+                        description=self.description)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert this field definition to a JSON-serializable dictionary."""
+        return {
+            "name": self.name,
+            "offset": self._serialize_value(self.offset),
+            "size": self._serialize_value(self.size),
+            "type": self._serialize_type(self.type),
+            "scale": self.scale,
+            "repeat": self.repeat,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FieldDef":
+        """Create a field definition from a JSON-serializable dictionary."""
+        return cls(
+            name=data.get("name", ""),
+            offset=cls._deserialize_value(data.get("offset")),
+            size=cls._deserialize_value(data.get("size")),
+            type=cls._deserialize_type(data.get("type")),
+            scale=data.get("scale", 1.0),
+            repeat=data.get("repeat"),
+            description=data.get("description"),
+        )
+
+    @staticmethod
+    def _serialize_value(value: Any) -> Any:
+        if isinstance(value, InfoSize):
+            return {
+                "__type__": "InfoSize",
+                "byte": value.byte,
+                "bit": value.bit,
+            }
+        return value
+
+    @classmethod
+    def _deserialize_value(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("__type__") == "InfoSize":
+            return InfoSize(value["byte"], value["bit"])
+        return value
+
+    @staticmethod
+    def _serialize_type(value: Any) -> Any:
+        if isinstance(value, list):
+            return [field.to_dict() for field in value]
+        return value
+
+    @classmethod
+    def _deserialize_type(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [cls.from_dict(item) for item in value]
+        return value
+
+
+def field_def_to_json(field_def: FieldDef) -> str:
+    """Serialize a field definition to a JSON string."""
+    return json.dumps(field_def.to_dict(), ensure_ascii=False, indent=2)
+
+
+def field_def_from_json(data: str) -> FieldDef:
+    """Deserialize a field definition from a JSON string."""
+    return FieldDef.from_dict(json.loads(data))
+
+
+def save_field_def_dict(path: str | Path,
+                        field_def_dict: dict[str, FieldDef]) -> None:
+    """Save a field definition dictionary to a JSON file."""
+    payload = {
+        name: field_def.to_dict()
+        for name, field_def in field_def_dict.items()
+    }
+    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+
+
+def load_field_def_dict(path: str | Path) -> dict[str, FieldDef]:
+    """Load a field definition dictionary from a JSON file."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {
+        name: FieldDef.from_dict(field_def_data)
+        for name, field_def_data in data.items()
+    }
 
 
 def _resolve_offset(field_def: FieldDef, env: dict[str, Any]) -> InfoSize:
@@ -146,12 +253,7 @@ def encode(result: list[tuple[FieldDef, Any]],
             values = list(value)
 
             for i in range(field_def.repeat):
-                field_def_repeat = FieldDef(name=f"{field_def.name}[{i}]",
-                                            offset=current_offset,
-                                            size=field_def.size,
-                                            type=field_def.type,
-                                            scale=field_def.scale,
-                                            repeat=None)
+                field_def_repeat = field_def.split_repeat(i, current_offset)
                 encode_field(field_def_repeat, values[i], buf, env,
                              field_def_dict)
                 env[field_def_repeat.name] = values[i]
@@ -244,12 +346,7 @@ def decode(
         # Handle repeated fields
         current_offset = field_def.offset
         for i in range(field_def.repeat):
-            field_def_repeat = FieldDef(name=f"{field_def.name}[{i}]",
-                                        offset=current_offset,
-                                        size=field_def.size,
-                                        type=field_def.type,
-                                        scale=field_def.scale,
-                                        repeat=None)
+            field_def_repeat = field_def.split_repeat(i, current_offset)
             value = decode_field(field_def_repeat, data, env, field_def_dict)
             if value is not None:
                 env[field_def_repeat.name] = value

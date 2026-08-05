@@ -1,7 +1,11 @@
 """Tests for the sltcodec module."""
+from pathlib import Path
+
 from sltcore import InfoSize
 
-from sltcodec import FieldDef, decode, encode
+from sltcodec import (FieldDef, decode, encode, field_def_from_json,
+                      field_def_to_json, load_field_def_dict,
+                      save_field_def_dict)
 
 
 def test_encode_and_decode_round_trip():
@@ -82,6 +86,53 @@ def test_encode_recurses_for_nested_field_types():
         ("left", 3),
         ("right", 4),
     ]
+
+
+def test_repeated_field_preserves_description():
+    """Test that repeated fields keep their description on decoded entries."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         repeat=2,
+                         description="A repeated value")
+
+    encoded = encode([(field_def, [1, 2])])
+    decoded = decode([field_def], encoded)
+
+    assert encoded == bytearray(b"\x01\x02")
+    assert decoded[0][0].description == "A repeated value"
+    assert decoded[1][0].description == "A repeated value"
+
+
+def test_field_def_json_round_trip():
+    """Test that FieldDef can be serialized and deserialized from JSON."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         description="A value")
+
+    payload = field_def_to_json(field_def)
+    restored = field_def_from_json(payload)
+
+    assert restored == field_def
+    assert restored.description == "A value"
+
+
+def test_field_def_dict_load_and_save(tmp_path: Path):
+    """Test that a FieldDef dictionary can be saved and reloaded."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         description="A value")
+    path = tmp_path / "field_defs.json"
+
+    save_field_def_dict(path, {"value": field_def})
+    loaded = load_field_def_dict(path)
+
+    assert loaded["value"] == field_def
 
 
 def test_type_expression_uses_previous_field_value():

@@ -10,6 +10,8 @@ pip install sltcodec
 
 ## Quick Example
 
+`FieldDef.description` is an optional human-readable note that can be attached to each field definition.
+
 ```python
 from sltcore import InfoSize
 from sltcodec import FieldDef, decode, encode
@@ -19,12 +21,14 @@ field_defs = [
              offset=InfoSize(0, 0),
              size=InfoSize(0, 1),
              type="bool",
-             scale=1.0),
+             scale=1.0,
+             description="Whether the feature is enabled"),
     FieldDef(name="value",
              offset=InfoSize(0, 1),
              size=InfoSize(1, 0),
              type="unsigned int",
-             scale=1.0),
+             scale=1.0,
+             description="The encoded numeric payload"),
 ]
 
 encoded = encode([(field_defs[0], True), (field_defs[1], 0xA5)])

@@ -1,12 +1,12 @@
 [project]
 name = "sltcodec"
-version = "0.1.0"
+version = "0.2.0"
 description = "Decode and encode bytearrays according to struct layout definitions using sltcore."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "sltcalc>=0.1.0",
-    "sltcore>=1.1.1",
+    "sltcore>=1.2.0",
 ]
 license = "MIT"
 license-files = ["LICENSE"]

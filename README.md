@@ -16,7 +16,7 @@ pip install sltcodec
 from sltcore import InfoSize
 from sltcodec import FieldDef, decode, encode
 
-field_defs = [
+struct_def = [
     FieldDef(name="flag",
              offset=InfoSize(0, 0),
              size=InfoSize(0, 1),
@@ -31,8 +31,8 @@ field_defs = [
              description="The encoded numeric payload"),
 ]
 
-encoded = encode([(field_defs[0], True), (field_defs[1], 0xA5)])
-decoded = decode(field_defs, encoded)
+encoded = encode([(struct_def[0], True), (struct_def[1], 0xA5)])
+decoded = decode(struct_def, encoded)
 
 print(encoded)
 print(decoded)
@@ -49,14 +49,14 @@ bytearray(b"\xd2\x80")
 
 ## Nested Field Types
 
-`FieldDef.type` can be a list of `FieldDef`, not only a primitive type name.
+`FieldDef.type` can be a `StructDef`, not only a primitive type name.
 This allows you to define an inline nested structure and keep `encode_field` / `decode_field` behavior symmetrical.
 
 ```python
 from sltcore import InfoSize
-from sltcodec import FieldDef, decode, encode
+from sltcodec import FieldDef, StructDef, decode, encode
 
-child_field_defs = [
+child_struct_def = [
     FieldDef(name="left", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
     FieldDef(name="right", offset=InfoSize(1, 0), size=InfoSize(1, 0), type="unsigned int"),
 ]
@@ -65,15 +65,19 @@ parent_field_def = FieldDef(
     name="pair",
     offset=InfoSize(0, 0),
     size=InfoSize(2, 0),
-    type=child_field_defs,
+    type=StructDef(
+        name="Pair",
+        description="Two adjacent unsigned ints",
+        fields=child_struct_def,
+    ),
 )
 
 encoded = encode([
     (
         parent_field_def,
         [
-            (child_field_defs[0], 3),
-            (child_field_defs[1], 4),
+            (child_struct_def[0], 3),
+            (child_struct_def[1], 4),
         ],
     )
 ])
@@ -101,7 +105,7 @@ The expression is evaluated with previously processed field values in scope, so 
 from sltcore import InfoSize
 from sltcodec import FieldDef, decode, encode
 
-field_defs = [
+struct_def = [
     FieldDef(name="kind", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
     FieldDef(
         name="payload",
@@ -112,15 +116,45 @@ field_defs = [
 ]
 
 # kind=1 -> payload is int (1 byte)
-encoded_int = encode([(field_defs[0], 1), (field_defs[1], 7)])
-decoded_int = decode(field_defs, encoded_int)
+encoded_int = encode([(struct_def[0], 1), (struct_def[1], 7)])
+decoded_int = decode(struct_def, encoded_int)
 
 # kind=2 -> payload is float (4 bytes)
-encoded_float = encode([(field_defs[0], 2), (field_defs[1], 1.5)])
-decoded_float = decode(field_defs, encoded_float)
+encoded_float = encode([(struct_def[0], 2), (struct_def[1], 1.5)])
+decoded_float = decode(struct_def, encoded_float)
 
 print(encoded_int, decoded_int)
 print(encoded_float, decoded_float)
+```
+
+## Saving And Loading StructDef Dictionaries
+
+You can persist reusable structure definitions by name with
+`save_struct_def_dict` / `load_struct_def_dict`.
+
+```python
+from pathlib import Path
+
+from sltcore import InfoSize
+from sltcodec import FieldDef, StructDef, load_struct_def_dict, save_struct_def_dict
+
+struct_defs = {
+    "Header": StructDef(
+        name="Header",
+        description="Simple header",
+        fields=[
+            FieldDef(name="kind", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
+            FieldDef(name="flags", offset=InfoSize(1, 0), size=InfoSize(1, 0), type="unsigned int"),
+        ],
+    )
+}
+
+path = Path("struct_defs.json")
+save_struct_def_dict(path, struct_defs)
+loaded = load_struct_def_dict(path)
+
+print(loaded["Header"].name)
+print(loaded["Header"].description)
 ```
 
 Example output:

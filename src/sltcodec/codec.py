@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from sltcalc import SltEval
 from sltcore import Info, InfoSize, bits_get, bits_set
+
+from .types import FieldDef, StructDef
 
 _PRIMITIVE_TYPES = {
     "bool",
@@ -21,96 +22,11 @@ _PRIMITIVE_TYPES = {
 }
 
 
-@dataclass(frozen=True)
-class FieldDef:
-    """A field in a structured layout."""
-    name: str = field(default_factory=str,
-                      metadata={"desc": "The name of the field"})
-    offset: InfoSize | str = field(default_factory=InfoSize,
-                                   metadata={"desc": "The offset of the field"})
-    size: InfoSize | str = field(default_factory=InfoSize,
-                                 metadata={"desc": "The size of the field"})
-    type: str | list["FieldDef"] = field(
-        default_factory=str, metadata={"desc": "The type of the field"})
-    scale: float = field(default=1.0,
-                         metadata={"desc": "The scale of the field"})
-    repeat: int | None = field(
-        default=None, metadata={"desc": "The repeat count of the field"})
-    description: str | None = field(
-        default=None, metadata={"desc": "The description of the field"})
-
-    def split_repeat(self,
-                     index: int,
-                     offset: InfoSize | str | None = None) -> "FieldDef":
-        """Create a single repeated-field definition for the given index.
-
-        Parameters
-        ----------
-        index : int
-            The index of the repeated field.
-        offset : InfoSize | str | None, optional
-            The offset of the repeated field, by default None.
-        """
-        return FieldDef(name=f"{self.name}[{index}]",
-                        offset=self.offset if offset is None else offset,
-                        size=self.size,
-                        type=self.type,
-                        scale=self.scale,
-                        repeat=None,
-                        description=self.description)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert this field definition to a JSON-serializable dictionary."""
-        return {
-            "name": self.name,
-            "offset": self._serialize_value(self.offset),
-            "size": self._serialize_value(self.size),
-            "type": self._serialize_type(self.type),
-            "scale": self.scale,
-            "repeat": self.repeat,
-            "description": self.description,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "FieldDef":
-        """Create a field definition from a JSON-serializable dictionary."""
-        return cls(
-            name=data.get("name", ""),
-            offset=cls._deserialize_value(data.get("offset")),
-            size=cls._deserialize_value(data.get("size")),
-            type=cls._deserialize_type(data.get("type")),
-            scale=data.get("scale", 1.0),
-            repeat=data.get("repeat"),
-            description=data.get("description"),
-        )
-
-    @staticmethod
-    def _serialize_value(value: Any) -> Any:
-        if isinstance(value, InfoSize):
-            return {
-                "__type__": "InfoSize",
-                "byte": value.byte,
-                "bit": value.bit,
-            }
-        return value
-
-    @classmethod
-    def _deserialize_value(cls, value: Any) -> Any:
-        if isinstance(value, dict) and value.get("__type__") == "InfoSize":
-            return InfoSize(value["byte"], value["bit"])
-        return value
-
-    @staticmethod
-    def _serialize_type(value: Any) -> Any:
-        if isinstance(value, list):
-            return [field.to_dict() for field in value]
-        return value
-
-    @classmethod
-    def _deserialize_type(cls, value: Any) -> Any:
-        if isinstance(value, list):
-            return [cls.from_dict(item) for item in value]
-        return value
+def _as_field_defs(struct_def: StructDef | list[FieldDef]) -> list[FieldDef]:
+    """Normalize StructDef/list inputs to a list of field definitions."""
+    if isinstance(struct_def, StructDef):
+        return struct_def.fields
+    return struct_def
 
 
 def field_def_to_json(field_def: FieldDef) -> str:
@@ -123,22 +39,22 @@ def field_def_from_json(data: str) -> FieldDef:
     return FieldDef.from_dict(json.loads(data))
 
 
-def save_field_def_dict(path: str | Path,
-                        field_def_dict: dict[str, FieldDef]) -> None:
-    """Save a field definition dictionary to a JSON file."""
+def save_struct_def_dict(path: str | Path,
+                         struct_def_dict: dict[str, StructDef]) -> None:
+    """Save a structure definition dictionary to a JSON file."""
     payload = {
-        name: field_def.to_dict()
-        for name, field_def in field_def_dict.items()
+        name: struct_def.to_dict()
+        for name, struct_def in struct_def_dict.items()
     }
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                           encoding="utf-8")
 
 
-def load_field_def_dict(path: str | Path) -> dict[str, FieldDef]:
-    """Load a field definition dictionary from a JSON file."""
+def load_struct_def_dict(path: str | Path) -> dict[str, StructDef]:
+    """Load a structure definition dictionary from a JSON file."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return {
-        name: FieldDef.from_dict(field_def_data)
+        name: StructDef.from_dict(field_def_data)
         for name, field_def_data in data.items()
     }
 
@@ -161,21 +77,21 @@ def _resolve_size(field_def: FieldDef, env: dict[str, Any]) -> InfoSize:
     return field_def.size
 
 
-def _resolve_field_type(
-        field_type: str | list[FieldDef],
-        field_def_dict: dict[str, Any] | None = None,
-        env: dict[str, Any] | None = None) -> str | list[FieldDef]:
+def _resolve_field_type(field_type: str | StructDef,
+                        struct_def_dict: dict[str, StructDef] | None = None,
+                        env: dict[str, Any] | None = None) -> str | StructDef:
     """Resolve a field type that can be primitive, named, or nested."""
-    if isinstance(field_type, list):
+    if isinstance(field_type, StructDef):
         return field_type
     if field_type in _PRIMITIVE_TYPES:
         return field_type
 
-    sub_field_defs = _get_field_def(field_type, field_def_dict, env)
-    if isinstance(sub_field_defs, list):
-        return sub_field_defs
-    if isinstance(sub_field_defs, str) and sub_field_defs in _PRIMITIVE_TYPES:
-        return sub_field_defs
+    resolved_struct_def = _get_struct_def(field_type, struct_def_dict, env)
+    if isinstance(resolved_struct_def, StructDef):
+        return resolved_struct_def
+    if (isinstance(resolved_struct_def, str)
+            and resolved_struct_def in _PRIMITIVE_TYPES):
+        return resolved_struct_def
     return field_type
 
 
@@ -206,7 +122,7 @@ def _prepare_field_info(
     field_def: FieldDef,
     value: Any,
     env: dict[str, Any],
-    field_def_dict: dict[str, Any] | None = None
+    struct_def_dict: dict[str, StructDef] | None = None
 ) -> tuple[InfoSize, InfoSize, Info] | None:
     """Resolve a field definition into an offset, size, and info payload."""
     offset = _resolve_offset(field_def, env)
@@ -214,9 +130,9 @@ def _prepare_field_info(
     if size.byte == 0 and size.bit == 0:
         return None
 
-    resolved_type = _resolve_field_type(field_def.type, field_def_dict, env)
-    if isinstance(resolved_type, list):
-        nested_bytes = encode(list(value), field_def_dict)
+    resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
+    if isinstance(resolved_type, StructDef):
+        nested_bytes = encode(list(value), struct_def_dict)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
         info = _encode_primitive(resolved_type, value, size, field_def.scale)
@@ -266,12 +182,12 @@ def encode_field(field_def: FieldDef,
                  value: Any,
                  buf: bytearray,
                  env: dict[str, Any] | None = None,
-                 field_def_dict: dict[str, Any] | None = None) -> None:
+                 struct_def_dict: dict[str, StructDef] | None = None) -> None:
     """Encode a single field into a bytearray."""
     if env is None:
         env = {}
 
-    prepared = _prepare_field_info(field_def, value, env, field_def_dict)
+    prepared = _prepare_field_info(field_def, value, env, struct_def_dict)
     if prepared is None:
         return
 
@@ -284,7 +200,7 @@ def encode_field(field_def: FieldDef,
 
 
 def encode(result: list[tuple[FieldDef, Any]],
-           field_def_dict: dict[str, Any] | None = None,
+           struct_def_dict: dict[str, StructDef] | None = None,
            parallel_count: int = 1) -> bytearray:
     """Encode decode() result into a bytearray.
 
@@ -292,8 +208,8 @@ def encode(result: list[tuple[FieldDef, Any]],
     ----------
     result : list[tuple[FieldDef, Any]]
         The decode() result to encode.
-    field_def_dict : dict[str, Any] | None, optional
-        A dictionary of field definitions, by default None.
+    struct_def_dict : dict[str, StructDef] | None, optional
+        A dictionary of structure definitions, by default None.
 
     Returns
     -------
@@ -328,7 +244,7 @@ def encode(result: list[tuple[FieldDef, Any]],
                     futures = [
                         executor.submit(_prepare_field_info,
                                         repeated_fields[index], values[index],
-                                        env.copy(), field_def_dict)
+                                        env.copy(), struct_def_dict)
                         for index in range(field_def.repeat)
                     ]
                     prepared_results = [future.result() for future in futures]
@@ -348,14 +264,14 @@ def encode(result: list[tuple[FieldDef, Any]],
                 field_def_repeat = _split_repeated_field(
                     field_def, i, env, current_offset)
                 encode_field(field_def_repeat, values[i], buf, env,
-                             field_def_dict)
+                             struct_def_dict)
                 env[field_def_repeat.name] = values[i]
                 if isinstance(current_offset, InfoSize) and isinstance(
                         resolved_size, InfoSize):
                     current_offset += resolved_size
             continue
 
-        encode_field(field_def, value, buf, env, field_def_dict)
+        encode_field(field_def, value, buf, env, struct_def_dict)
         env[field_def.name] = value
 
     return buf
@@ -364,7 +280,7 @@ def encode(result: list[tuple[FieldDef, Any]],
 def decode_field(field_def: FieldDef,
                  data: bytearray | bytes,
                  env: dict[str, Any] | None = None,
-                 field_def_dict: dict[str, Any] | None = None) -> Any:
+                 struct_def_dict: dict[str, StructDef] | None = None) -> Any:
     """Decode a single field from a bytearray according to a field definition.
 
     Parameters
@@ -375,8 +291,8 @@ def decode_field(field_def: FieldDef,
         The data to decode.
     env : dict[str, Any] | None, optional
         The environment for evaluating expressions, by default None.
-    field_def_dict : dict[str, Any] | None, optional
-        A dictionary of field definitions, by default None.
+    struct_def_dict : dict[str, StructDef] | None, optional
+        A dictionary of structure definitions, by default None.
     Returns
     -------
     Any
@@ -389,9 +305,9 @@ def decode_field(field_def: FieldDef,
     if size.byte == 0 and size.bit == 0:
         return None
     info = bits_get(data, offset, size, scale=field_def.scale)
-    resolved_type = _resolve_field_type(field_def.type, field_def_dict, env)
-    if isinstance(resolved_type, list):
-        return decode(resolved_type, bytearray(info.to_bytes), field_def_dict)
+    resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
+    if isinstance(resolved_type, StructDef):
+        return decode(resolved_type, bytearray(info.to_bytes), struct_def_dict)
     if resolved_type == "bool":
         return info.to_bool
     if resolved_type == "signed int":
@@ -405,20 +321,20 @@ def decode_field(field_def: FieldDef,
     return info.raw_value
 
 
-def decode(field_defs: list[FieldDef],
+def decode(struct_def: StructDef | list[FieldDef],
            data: bytearray | bytes,
-           field_def_dict: dict[str, Any] | None = None,
+           struct_def_dict: dict[str, StructDef] | None = None,
            parallel_count: int = 1) -> list[tuple[FieldDef, Any]]:
     """Decode a bytearray into field values according to a layout.
 
     Parameters
     ----------
-    field_defs : list[FieldDef]
+    struct_def : StructDef | list[FieldDef]
         The definitions of the fields to decode.
     data : bytearray | bytes
         The data to decode.
-    field_def_dict : dict[str, Any] | None, optional
-        A dictionary of field definitions, by default None.
+    struct_def_dict : dict[str, StructDef] | None, optional
+        A dictionary of structure definitions, by default None.
     Returns
     -------
     list[tuple[FieldDef, Any]]
@@ -428,10 +344,10 @@ def decode(field_defs: list[FieldDef],
     result: list[tuple[FieldDef, Any]] = []
     env = {}
 
-    for field_def in field_defs:
+    for field_def in _as_field_defs(struct_def):
         # Handle non-repeated fields
         if field_def.repeat is None or field_def.repeat <= 1:
-            value = decode_field(field_def, data, env, field_def_dict)
+            value = decode_field(field_def, data, env, struct_def_dict)
             if value is not None:
                 env[field_def.name] = value
                 result.append((field_def, value))
@@ -456,7 +372,7 @@ def decode(field_defs: list[FieldDef],
             with ThreadPoolExecutor(max_workers=parallel_count) as executor:
                 futures = [
                     executor.submit(decode_field, repeated_fields[index], data,
-                                    env.copy(), field_def_dict)
+                                    env.copy(), struct_def_dict)
                     for index in range(field_def.repeat)
                 ]
                 decoded_values = [future.result() for future in futures]
@@ -470,7 +386,7 @@ def decode(field_defs: list[FieldDef],
         for i in range(field_def.repeat):
             field_def_repeat = _split_repeated_field(field_def, i, env,
                                                      current_offset)
-            value = decode_field(field_def_repeat, data, env, field_def_dict)
+            value = decode_field(field_def_repeat, data, env, struct_def_dict)
             if value is not None:
                 env[field_def_repeat.name] = value
                 result.append((field_def_repeat, value))
@@ -481,37 +397,39 @@ def decode(field_defs: list[FieldDef],
     return result
 
 
-def _get_field_def(field_def_name: str,
-                   field_def_dict: dict[str, Any] | None = None,
-                   env: dict[str, Any] | None = None) -> Any:
-    """Get a field definition from a dictionary or evaluate it.
+def _get_struct_def(
+        struct_def_name: str,
+        struct_def_dict: dict[str, StructDef] | None = None,
+        env: dict[str, Any] | None = None) -> StructDef | str | None:
+    """Get a structure definition from a dictionary or evaluate it.
 
     Parameters
     ----------
-    field_def_name : str
-        The name of the field definition to get.
-    field_def_dict : dict[str, Any] | None, optional
-        A dictionary of field definitions, by default None.
+    struct_def_name : str
+        The name of the structure definition to get.
+    struct_def_dict : dict[str, StructDef] | None, optional
+        A dictionary of structure definitions, by default None.
     env : dict[str, Any] | None, optional
-        The environment for evaluating the field definition, by default None.
+        The environment for evaluating the structure definition,
+        by default None.
 
     Returns
     -------
-    Any
-        The field definition, or None if not found.
+    StructDef | str | None
+        The structure definition, primitive type, or None if not found.
     """
-    if field_def_dict and field_def_name in field_def_dict:
-        return field_def_dict[field_def_name]
+    if struct_def_dict and struct_def_name in struct_def_dict:
+        return struct_def_dict[struct_def_name]
 
     stleval = SltEval(env)
     try:
-        eval_result = stleval.eval(field_def_name)
+        eval_result = stleval.eval(struct_def_name)
     except (SyntaxError, NameError, TypeError, ValueError):
         return None
 
     if isinstance(eval_result, str) and eval_result in _PRIMITIVE_TYPES:
         return eval_result
-    if isinstance(eval_result,
-                  str) and field_def_dict and eval_result in field_def_dict:
-        return field_def_dict[eval_result]
+    if (isinstance(eval_result, str) and struct_def_dict
+            and eval_result in struct_def_dict):
+        return struct_def_dict[eval_result]
     return None

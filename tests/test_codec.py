@@ -3,14 +3,14 @@ from pathlib import Path
 
 from sltcore import InfoSize
 
-from sltcodec import (FieldDef, decode, encode, field_def_from_json,
-                      field_def_to_json, load_field_def_dict,
-                      save_field_def_dict)
+from sltcodec import (FieldDef, StructDef, decode, encode, field_def_from_json,
+                      field_def_to_json, load_struct_def_dict,
+                      save_struct_def_dict)
 
 
 def test_encode_and_decode_round_trip():
     """Test that encoding and then decoding returns the original data."""
-    field_defs = [
+    struct_def = [
         FieldDef(name="flag",
                  offset=InfoSize(0, 0),
                  size=InfoSize(0, 1),
@@ -21,18 +21,18 @@ def test_encode_and_decode_round_trip():
                  type="unsigned int"),
     ]
 
-    encoded = encode([(field_defs[0], True), (field_defs[1], 0xA5)])
+    encoded = encode([(struct_def[0], True), (struct_def[1], 0xA5)])
 
     assert encoded == bytearray(b"\xd2\x80")
-    assert decode(field_defs, encoded) == [
-        (field_defs[0], True),
-        (field_defs[1], 165),
+    assert decode(struct_def, encoded) == [
+        (struct_def[0], True),
+        (struct_def[1], 165),
     ]
 
 
 def test_encode_layout_handles_repeat():
     """Test that encoding a layout with a repeated field works correctly."""
-    field_defs = [
+    struct_def = [
         FieldDef(name="value",
                  offset=InfoSize(0, 0),
                  size=InfoSize(1, 0),
@@ -40,10 +40,10 @@ def test_encode_layout_handles_repeat():
                  repeat=2),
     ]
 
-    encoded = encode([(field_defs[0], [1, 2])])
+    encoded = encode([(struct_def[0], [1, 2])])
 
     assert encoded == bytearray(b"\x01\x02")
-    assert decode(field_defs, encoded) == [
+    assert decode(struct_def, encoded) == [
         (FieldDef(name="value[0]",
                   offset=InfoSize(0, 0),
                   size=InfoSize(1, 0),
@@ -70,7 +70,7 @@ def test_encode_recurses_for_nested_field_types():
     parent_field_def = FieldDef(name="pair",
                                 offset=InfoSize(0, 0),
                                 size=InfoSize(2, 0),
-                                type=child_field_defs)
+                                type=StructDef(fields=child_field_defs))
     child_values = [
         (child_field_defs[0], 3),
         (child_field_defs[1], 4),
@@ -120,19 +120,45 @@ def test_field_def_json_round_trip():
     assert restored.description == "A value"
 
 
-def test_field_def_dict_load_and_save(tmp_path: Path):
-    """Test that a FieldDef dictionary can be saved and reloaded."""
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(1, 0),
-                         type="unsigned int",
-                         description="A value")
+def test_struct_def_metadata_json_round_trip():
+    """Test that StructDef name/description are preserved in JSON."""
+    child = FieldDef(name="value",
+                     offset=InfoSize(0, 0),
+                     size=InfoSize(1, 0),
+                     type="unsigned int")
+    parent = FieldDef(name="payload",
+                      offset=InfoSize(0, 0),
+                      size=InfoSize(1, 0),
+                      type=StructDef(name="Payload",
+                                     description="Payload layout",
+                                     fields=[child]))
+
+    payload = field_def_to_json(parent)
+    restored = field_def_from_json(payload)
+
+    assert isinstance(restored.type, StructDef)
+    assert restored.type.name == "Payload"
+    assert restored.type.description == "Payload layout"
+    assert restored.type.fields == [child]
+
+
+def test_struct_def_dict_load_and_save(tmp_path: Path):
+    """Test that a StructDef dictionary can be saved and reloaded."""
+    struct_def = StructDef(name="ValueStruct",
+                           description="Single value struct",
+                           fields=[
+                               FieldDef(name="value",
+                                        offset=InfoSize(0, 0),
+                                        size=InfoSize(1, 0),
+                                        type="unsigned int",
+                                        description="A value")
+                           ])
     path = tmp_path / "field_defs.json"
 
-    save_field_def_dict(path, {"value": field_def})
-    loaded = load_field_def_dict(path)
+    save_struct_def_dict(path, {"value": struct_def})
+    loaded = load_struct_def_dict(path)
 
-    assert loaded["value"] == field_def
+    assert loaded["value"] == struct_def
 
 
 def test_encode_and_decode_accept_parallel_count_for_repeated_fields():
@@ -195,7 +221,7 @@ def test_parallel_count_falls_back_for_env_dependent_repeated_fields():
 
 def test_type_expression_uses_previous_field_value():
     """Test that a type expression can depend on a previously decoded field."""
-    field_defs = [
+    struct_def = [
         FieldDef(name="kind",
                  offset=InfoSize(0, 0),
                  size=InfoSize(1, 0),
@@ -206,12 +232,12 @@ def test_type_expression_uses_previous_field_value():
                  type="{1: 'int', 2: 'float'}[kind]"),
     ]
 
-    encoded_int = encode([(field_defs[0], 1), (field_defs[1], 7)])
-    decoded_int = decode(field_defs, encoded_int)
-    assert decoded_int == [(field_defs[0], 1), (field_defs[1], 7)]
+    encoded_int = encode([(struct_def[0], 1), (struct_def[1], 7)])
+    decoded_int = decode(struct_def, encoded_int)
+    assert decoded_int == [(struct_def[0], 1), (struct_def[1], 7)]
 
-    encoded_float = encode([(field_defs[0], 2), (field_defs[1], 1.5)])
-    decoded_float = decode(field_defs, encoded_float)
-    assert decoded_float[0] == (field_defs[0], 2)
-    assert decoded_float[1][0] == field_defs[1]
+    encoded_float = encode([(struct_def[0], 2), (struct_def[1], 1.5)])
+    decoded_float = decode(struct_def, encoded_float)
+    assert decoded_float[0] == (struct_def[0], 2)
+    assert decoded_float[1][0] == struct_def[1]
     assert decoded_float[1][1] == 1.5

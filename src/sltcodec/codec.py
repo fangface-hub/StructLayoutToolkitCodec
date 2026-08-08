@@ -93,7 +93,7 @@ def _info_size_to_bits(info_size: InfoSize) -> int:
 
 def _info_size_from_bits(total_bits: int) -> InfoSize:
     """Create InfoSize from an absolute bit count."""
-    return InfoSize(total_bits // 8, total_bits % 8)
+    return InfoSize(total_bits >> 3, total_bits & 0x7)
 
 
 def _resolve_field_type(field_type: str | StructDef,
@@ -385,7 +385,7 @@ def decode(
                 current_position = current_offset + resolved_size
             current_offset += resolved_size
 
-    append_padding_until(struct_def_obj.size)
+    append_padding_until(result.size)
 
     return result
 

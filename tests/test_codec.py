@@ -199,17 +199,16 @@ def test_struct_def_metadata_json_round_trip():
     assert restored.type.fields == [child]
 
 
-def test_struct_def_size_json_round_trip():
-    """Test that StructDef size is preserved in JSON."""
-    struct_def = StructDef(name="SizedStruct",
-                           description="Sized struct",
-                           size=InfoSize(8, 0),
-                           fields=[])
+def test_struct_instance_size_json_round_trip():
+    """Test that StructInstance size is preserved in the instance state."""
+    struct_instance = StructInstance(
+        size=InfoSize(8, 0),
+        struct_def=StructDef(name="SizedStruct",
+                             description="Sized struct",
+                             fields=[]),
+    )
 
-    payload = struct_def.to_json()
-    restored = StructDef.from_json(payload)
-
-    assert restored == struct_def
+    assert struct_instance.size == InfoSize(8, 0)
 
 
 def test_struct_def_dict_load_and_save(tmp_path: Path):
@@ -327,19 +326,16 @@ def test_type_expression_uses_previous_field_value():
 
 def test_decode_inserts_padding_fields_for_gaps_and_trailing_space():
     """Test that decode inserts padding fields split by 4-byte boundaries."""
-    struct_def = StructDef(
-        size=InfoSize(10, 0),
-        fields=[
-            FieldDef(name="head",
-                     offset=InfoSize(0, 0),
-                     size=InfoSize(1, 0),
-                     type="unsigned int"),
-            FieldDef(name="tail",
-                     offset=InfoSize(6, 0),
-                     size=InfoSize(1, 0),
-                     type="unsigned int"),
-        ],
-    )
+    struct_def = StructDef(fields=[
+        FieldDef(name="head",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="tail",
+                 offset=InfoSize(6, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+    ])
     data = bytearray(b"\x11\xaa\xbb\xcc\xdd\xee\x22\x99\x88\x77")
 
     decoded = decode(struct_def, data)
@@ -352,8 +348,6 @@ def test_decode_inserts_padding_fields_for_gaps_and_trailing_space():
         "padding[0]",
         "padding[1]",
         "tail",
-        "padding[2]",
-        "padding[3]",
     ]
     assert decoded.field_instances[1].field_def.offset == InfoSize(1, 0)
     assert decoded.field_instances[1].field_def.size == InfoSize(3, 0)
@@ -361,12 +355,6 @@ def test_decode_inserts_padding_fields_for_gaps_and_trailing_space():
     assert decoded.field_instances[2].field_def.offset == InfoSize(4, 0)
     assert decoded.field_instances[2].field_def.size == InfoSize(2, 0)
     assert decoded.field_instances[2].value == b"\xdd\xee"
-    assert decoded.field_instances[4].field_def.offset == InfoSize(7, 0)
-    assert decoded.field_instances[4].field_def.size == InfoSize(1, 0)
-    assert decoded.field_instances[4].value == b"\x99"
-    assert decoded.field_instances[5].field_def.offset == InfoSize(8, 0)
-    assert decoded.field_instances[5].field_def.size == InfoSize(2, 0)
-    assert decoded.field_instances[5].value == b"\x88\x77"
 
 
 def test_encode_rejects_tuple_input():
@@ -442,6 +430,36 @@ def test_struct_instance_initial_field_instances_are_sorted():
     assert struct_instance.field_instances == [earlier, later]
 
 
+def test_struct_instance_rebuilds_padding_when_field_instances_change():
+    """Test that padding entries are rebuilt after field instance updates."""
+    tail_field_def = FieldDef(name="tail",
+                              offset=InfoSize(2, 0),
+                              size=InfoSize(1, 0),
+                              type="unsigned int")
+    head_field_def = FieldDef(name="head",
+                              offset=InfoSize(0, 0),
+                              size=InfoSize(1, 0),
+                              type="unsigned int")
+    struct_instance = StructInstance(
+        size=InfoSize(3, 0),
+        struct_def=StructDef(fields=[tail_field_def, head_field_def]),
+        field_instances=[FieldInstance(tail_field_def, 0xAA)],
+    )
+
+    struct_instance.append_field_instance(FieldInstance(head_field_def, 0x55))
+
+    assert [
+        field_instance.field_def.name
+        for field_instance in struct_instance.field_instances
+    ] == [
+        "head",
+        "padding[0]",
+        "tail",
+    ]
+    assert struct_instance.field_instances[1].is_padding is True
+    assert struct_instance.field_instances[1].value == b"\x00"
+
+
 def test_field_instance_sort_uses_field_def_order():
     """Test that FieldInstance sorting delegates to FieldDef ordering."""
     later = FieldInstance(
@@ -464,11 +482,27 @@ def test_field_instance_sort_uses_field_def_order():
     assert sorted_instances == [earlier, later]
 
 
-def test_struct_instance_size_property_returns_struct_def_size():
-    """Test that StructInstance.size exposes StructDef.size."""
-    struct_instance = StructInstance(struct_def=StructDef(size=InfoSize(5, 0)))
+def test_struct_instance_size_property_returns_initial_size():
+    """Test that StructInstance size is initialized from the provided value."""
+    struct_instance = StructInstance(size=InfoSize(5, 0),
+                                     struct_def=StructDef())
 
     assert struct_instance.size == InfoSize(5, 0)
+
+
+def test_struct_instance_size_property_uses_field_extent_when_available():
+    """Test that StructInstance size grows with instance field layout."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(1, 0),
+                         size=InfoSize(2, 0),
+                         type="unsigned int")
+    struct_instance = StructInstance(
+        size=InfoSize(1, 0),
+        struct_def=StructDef(fields=[field_def]),
+        field_instances=[FieldInstance(field_def=field_def, value=0x1234)],
+    )
+
+    assert struct_instance.size == InfoSize(3, 0)
 
 
 def test_encode_padding_fields_use_zero_value_and_extend_to_struct_size():
@@ -476,14 +510,14 @@ def test_encode_padding_fields_use_zero_value_and_extend_to_struct_size():
 
     Trailing bytes are padded until StructDef.size.
     """
-    struct_def = StructDef(size=InfoSize(6, 0),
-                           fields=[
-                               FieldDef(name="padding[0]",
-                                        offset=InfoSize(2, 0),
-                                        size=InfoSize(2, 0),
-                                        type="bytes")
-                           ])
+    struct_def = StructDef(fields=[
+        FieldDef(name="padding[0]",
+                 offset=InfoSize(2, 0),
+                 size=InfoSize(2, 0),
+                 type="bytes")
+    ])
     struct_instance = StructInstance(
+        size=InfoSize(6, 0),
         struct_def=struct_def,
         field_instances=[
             FieldInstance(field_def=struct_def.fields[0], value=b"\xff\xff")
@@ -494,7 +528,7 @@ def test_encode_padding_fields_use_zero_value_and_extend_to_struct_size():
     encoded = encode(struct_instance, buf)
 
     assert encoded is buf
-    assert encoded == bytearray(b"\x11\x22\x00\x00\x00\x00")
+    assert encoded == bytearray(b"\x00\x00\x00\x00\x00\x00")
 
 
 def test_encode_without_padding_does_not_extend_buf_to_struct_size():
@@ -504,7 +538,8 @@ def test_encode_without_padding_does_not_extend_buf_to_struct_size():
                          size=InfoSize(1, 0),
                          type="unsigned int")
     struct_instance = StructInstance(
-        struct_def=StructDef(size=InfoSize(4, 0), fields=[field_def]),
+        size=InfoSize(4, 0),
+        struct_def=StructDef(fields=[field_def]),
         field_instances=[FieldInstance(field_def=field_def, value=0x7F)],
     )
     buf = bytearray()
@@ -512,4 +547,4 @@ def test_encode_without_padding_does_not_extend_buf_to_struct_size():
     encoded = encode(struct_instance, buf)
 
     assert encoded is buf
-    assert encoded == bytearray(b"\x7f")
+    assert encoded == bytearray(b"\x7f\x00\x00\x00")

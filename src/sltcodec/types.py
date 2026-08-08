@@ -156,6 +156,10 @@ class FieldInstance:
     """A decoded/encodable field value with its field definition."""
     field_def: FieldDef = field(metadata={"desc": "The field definition"})
     value: Any = field(metadata={"desc": "The decoded/encodable value"})
+    is_padding: bool = field(
+        default=False,
+        metadata={"desc": "Whether this field instance represents padding"},
+    )
 
     def __lt__(self, other: object) -> bool:
         """Compare field instances using their field definition order."""
@@ -173,10 +177,6 @@ class StructDef:
         default_factory=str,
         metadata={"desc": "The description of the structure"},
     )
-    size: InfoSize = field(
-        default_factory=InfoSize,
-        metadata={"desc": "The total size of the structure"},
-    )
     fields: list[FieldDef] = field(
         default_factory=list,
         metadata={"desc": "The fields of the structure"},
@@ -187,7 +187,6 @@ class StructDef:
         return {
             "name": self.name,
             "description": self.description,
-            "size": self._serialize_size(self.size),
             "fields": [field_def.to_dict() for field_def in self.fields],
         }
 
@@ -206,7 +205,6 @@ class StructDef:
             return cls(fields=[FieldDef.from_dict(item) for item in data])
         return cls(name=data.get("name", ""),
                    description=data.get("description", ""),
-                   size=cls._deserialize_size(data.get("size", InfoSize())),
                    fields=[
                        FieldDef.from_dict(item)
                        for item in data.get("fields", [])
@@ -216,23 +214,6 @@ class StructDef:
     def from_json(cls, data: str) -> "StructDef":
         """Create a structure definition from a JSON string."""
         return cls.from_dict(json.loads(data))
-
-    @staticmethod
-    def _serialize_size(value: InfoSize) -> Any:
-        """Serialize the structure size."""
-        return {
-            "__type__": "InfoSize",
-            "value": value.to_json(),
-        }
-
-    @staticmethod
-    def _deserialize_size(value: Any) -> InfoSize:
-        """Deserialize the structure size."""
-        if isinstance(value, dict) and value.get("__type__") == "InfoSize":
-            return InfoSize.from_json(value["value"])
-        if isinstance(value, InfoSize):
-            return value
-        return InfoSize()
 
 
 @dataclass
@@ -246,17 +227,24 @@ class StructInstance:
         default_factory=list,
         metadata={"desc": "The decoded/encodable field instances"},
     )
+    size: InfoSize = field(
+        default_factory=InfoSize,
+        metadata={"desc": "The total size of the structure instance"},
+    )
 
     def __post_init__(self) -> None:
         """Normalize stored field instances to sorted order."""
         self._sort_field_instances()
+        self._update_size()
+        self._rebuild_padding_field_instances()
 
     def append_field_instance(self, field_instance: FieldInstance) -> None:
         """Append one field instance to this structure instance."""
         if not isinstance(field_instance, FieldInstance):
             raise TypeError("field_instance must be FieldInstance")
         self.field_instances.append(field_instance)
-        self._sort_field_instances()
+        self._update_size()
+        self._rebuild_padding_field_instances()
 
     def extend_field_instances(self,
                                field_instances: list[FieldInstance]) -> None:
@@ -265,7 +253,8 @@ class StructInstance:
             if not isinstance(field_instance, FieldInstance):
                 raise TypeError("field_instance must be FieldInstance")
         self.field_instances.extend(field_instances)
-        self._sort_field_instances()
+        self._update_size()
+        self._rebuild_padding_field_instances()
 
     def __iter__(self):
         """Iterate over stored field instances."""
@@ -279,11 +268,92 @@ class StructInstance:
         """Return one field instance by index."""
         return self.field_instances[index]
 
-    @property
-    def size(self) -> InfoSize:
-        """Return structure size from the associated definition."""
-        return self.struct_def.size
-
     def _sort_field_instances(self) -> None:
         """Keep field instances sorted by FieldDef order."""
         self.field_instances.sort()
+
+    def _rebuild_padding_field_instances(self) -> None:
+        """Rebuild padding field instances for gaps between stored values."""
+        non_padding_instances = [
+            field_instance for field_instance in self.field_instances
+            if not field_instance.is_padding
+        ]
+        non_padding_instances.sort()
+
+        rebuilt_instances: list[FieldInstance] = []
+        current_offset = InfoSize(0, 0)
+        padding_index = 0
+
+        for field_instance in non_padding_instances:
+            field_def = field_instance.field_def
+            field_offset = self._resolve_field_offset(field_def)
+            field_size = self._resolve_field_size(field_def)
+            if field_offset > current_offset:
+                gap_size = field_offset - current_offset
+                if gap_size.byte > 0 or gap_size.bit > 0:
+                    rebuilt_instances.append(
+                        FieldInstance(
+                            field_def=FieldDef(
+                                name=f"padding[{padding_index}]",
+                                offset=current_offset,
+                                size=gap_size,
+                                type="bytes",
+                                description="Auto-generated padding",
+                            ),
+                            value=bytearray(gap_size.byte),
+                            is_padding=True,
+                        ))
+                    padding_index += 1
+            rebuilt_instances.append(field_instance)
+            current_offset = field_offset + field_size
+
+        if self.size > current_offset:
+            gap_size = self.size - current_offset
+            if gap_size.byte > 0 or gap_size.bit > 0:
+                rebuilt_instances.append(
+                    FieldInstance(
+                        field_def=FieldDef(
+                            name=f"padding[{padding_index}]",
+                            offset=current_offset,
+                            size=gap_size,
+                            type="bytes",
+                            description="Auto-generated padding",
+                        ),
+                        value=bytearray(gap_size.byte),
+                        is_padding=True,
+                    ))
+
+        self.field_instances = rebuilt_instances
+        self._sort_field_instances()
+        self._update_size()
+
+    def _update_size(self) -> None:
+        """Update the instance size from the current field layout."""
+        if not self.field_instances:
+            return
+
+        max_end_offset = InfoSize(0, 0)
+        for field_instance in self.field_instances:
+            field_def = field_instance.field_def
+            field_offset = self._resolve_field_offset(field_def)
+            field_size = self._resolve_field_size(field_def)
+            field_end = field_offset + field_size
+            if field_end > max_end_offset:
+                max_end_offset = field_end
+
+        if max_end_offset > self.size:
+            self.size = max_end_offset
+
+    @staticmethod
+    def _resolve_field_offset(field_def: FieldDef) -> InfoSize:
+        """Resolve field offsets to InfoSize values when possible."""
+        if isinstance(field_def.offset, InfoSize):
+            return field_def.offset
+        return InfoSize(0, 0)
+
+    @staticmethod
+    def _resolve_field_size(field_def: FieldDef) -> InfoSize:
+        """Resolve field sizes to InfoSize values when possible."""
+        if isinstance(field_def.size, InfoSize):
+            return field_def.size
+        return InfoSize(0, 0)

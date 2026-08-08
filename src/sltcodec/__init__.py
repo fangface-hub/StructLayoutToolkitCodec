@@ -1,16 +1,15 @@
-from .codec import (decode, encode, encode_field, field_def_from_json,
-                    field_def_to_json, load_struct_def_dict,
+from .codec import (decode, encode, encode_field, load_struct_def_dict,
                     save_struct_def_dict)
-from .types import FieldDef, StructDef
+from .types import FieldDef, FieldInstance, StructDef, StructInstance
 
 __all__ = [
     "FieldDef",
+    "FieldInstance",
     "StructDef",
+    "StructInstance",
     "decode",
     "encode",
     "encode_field",
-    "field_def_from_json",
-    "field_def_to_json",
     "load_struct_def_dict",
     "save_struct_def_dict",
 ]

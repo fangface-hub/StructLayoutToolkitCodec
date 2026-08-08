@@ -12,9 +12,13 @@ pip install sltcodec
 
 `FieldDef.description` is an optional human-readable note that can be attached to each field definition.
 
+`decode` returns a `StructInstance`.
+`encode` accepts a `StructInstance` and a destination `bytearray`.
+
 ```python
 from sltcore import InfoSize
-from sltcodec import FieldDef, decode, encode
+from sltcodec import (FieldDef, FieldInstance, StructDef, StructInstance,
+                      decode, encode)
 
 struct_def = [
     FieldDef(name="flag",
@@ -31,19 +35,30 @@ struct_def = [
              description="The encoded numeric payload"),
 ]
 
-encoded = encode([(struct_def[0], True), (struct_def[1], 0xA5)])
+encoded = encode(
+    StructInstance(
+        struct_def=StructDef(fields=struct_def),
+        field_instances=[
+            FieldInstance(struct_def[0], True),
+            FieldInstance(struct_def[1], 0xA5),
+        ],
+    ),
+    bytearray(),
+)
 decoded = decode(struct_def, encoded)
 
 print(encoded)
 print(decoded)
+print(decoded.field_instances)
 ```
 
 Output:
 
 ```python
 bytearray(b"\xd2\x80")
-[(FieldDef(name='flag', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=0, bit=1), type='bool', scale=1.0, repeat=None), True),
- (FieldDef(name='value', offset=InfoSize(byte=0, bit=1), size=InfoSize(byte=1, bit=0), type='unsigned int', scale=1.0, repeat=None), 165)]
+StructInstance(struct_def=StructDef(...), field_instances=[...])
+[FieldInstance(field_def=FieldDef(name='flag', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=0, bit=1), type='bool', scale=1.0, repeat=None), value=True),
+ FieldInstance(field_def=FieldDef(name='value', offset=InfoSize(byte=0, bit=1), size=InfoSize(byte=1, bit=0), type='unsigned int', scale=1.0, repeat=None), value=165)]
 
 ```
 
@@ -54,7 +69,7 @@ This allows you to define an inline nested structure and keep `encode_field` / `
 
 ```python
 from sltcore import InfoSize
-from sltcodec import FieldDef, StructDef, decode, encode
+from sltcodec import FieldDef, FieldInstance, StructDef, StructInstance, decode, encode
 
 child_struct_def = [
     FieldDef(name="left", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
@@ -72,28 +87,38 @@ parent_field_def = FieldDef(
     ),
 )
 
-encoded = encode([
-    (
-        parent_field_def,
-        [
-            (child_struct_def[0], 3),
-            (child_struct_def[1], 4),
+encoded = encode(
+    StructInstance(
+        struct_def=StructDef(fields=[parent_field_def]),
+        field_instances=[
+            FieldInstance(
+                parent_field_def,
+                StructInstance(
+                    struct_def=StructDef(fields=child_struct_def),
+                    field_instances=[
+                        FieldInstance(child_struct_def[0], 3),
+                        FieldInstance(child_struct_def[1], 4),
+                    ],
+                ),
+            )
         ],
-    )
-])
+    ),
+    bytearray(),
+)
 
 decoded = decode([parent_field_def], encoded)
 print(encoded)
 print(decoded)
+print(decoded.field_instances)
 ```
 
 Output:
 
 ```python
 bytearray(b"\x03\x04")
-[(FieldDef(name='pair', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=2, bit=0), type=[...], scale=1.0, repeat=None),
-  [(FieldDef(name='left', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=1, bit=0), type='unsigned int', scale=1.0, repeat=None), 3),
-   (FieldDef(name='right', offset=InfoSize(byte=1, bit=0), size=InfoSize(byte=1, bit=0), type='unsigned int', scale=1.0, repeat=None), 4)])]
+StructInstance(struct_def=StructDef(...), field_instances=[...])
+[FieldInstance(field_def=FieldDef(name='pair', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=2, bit=0), type=[...], scale=1.0, repeat=None),
+               value=StructInstance(struct_def=StructDef(...), field_instances=[...]))]
 ```
 
 ## Expression-Based Type Selection
@@ -103,7 +128,8 @@ The expression is evaluated with previously processed field values in scope, so 
 
 ```python
 from sltcore import InfoSize
-from sltcodec import FieldDef, decode, encode
+from sltcodec import (FieldDef, FieldInstance, StructDef, StructInstance,
+                      decode, encode)
 
 struct_def = [
     FieldDef(name="kind", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
@@ -116,11 +142,29 @@ struct_def = [
 ]
 
 # kind=1 -> payload is int (1 byte)
-encoded_int = encode([(struct_def[0], 1), (struct_def[1], 7)])
+encoded_int = encode(
+    StructInstance(
+        struct_def=StructDef(fields=struct_def),
+        field_instances=[
+            FieldInstance(struct_def[0], 1),
+            FieldInstance(struct_def[1], 7),
+        ],
+    ),
+    bytearray(),
+)
 decoded_int = decode(struct_def, encoded_int)
 
 # kind=2 -> payload is float (4 bytes)
-encoded_float = encode([(struct_def[0], 2), (struct_def[1], 1.5)])
+encoded_float = encode(
+    StructInstance(
+        struct_def=StructDef(fields=struct_def),
+        field_instances=[
+            FieldInstance(struct_def[0], 2),
+            FieldInstance(struct_def[1], 1.5),
+        ],
+    ),
+    bytearray(),
+)
 decoded_float = decode(struct_def, encoded_float)
 
 print(encoded_int, decoded_int)
@@ -160,8 +204,8 @@ print(loaded["Header"].description)
 Example output:
 
 ```python
-bytearray(b"\x01\x07") [(FieldDef(...kind...), 1), (FieldDef(...payload...), 7)]
-bytearray(b"\x02?\xc0\x00\x00") [(FieldDef(...kind...), 2), (FieldDef(...payload...), 1.5)]
+bytearray(b"\x01\x07") StructInstance(struct_def=StructDef(...), field_instances=[...])
+bytearray(b"\x02?\xc0\x00\x00") StructInstance(struct_def=StructDef(...), field_instances=[...])
 ```
 
 ## Development

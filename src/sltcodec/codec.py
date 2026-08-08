@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from sltcalc import SltEval
 from sltcore import Info, InfoSize, bits_get, bits_set
 
-from .types import FieldDef, StructDef
+from .types import FieldDef, FieldInstance, StructDef, StructInstance
 
 _PRIMITIVE_TYPES = {
     "bool",
@@ -29,14 +28,17 @@ def _as_field_defs(struct_def: StructDef | list[FieldDef]) -> list[FieldDef]:
     return struct_def
 
 
-def field_def_to_json(field_def: FieldDef) -> str:
-    """Serialize a field definition to a JSON string."""
-    return json.dumps(field_def.to_dict(), ensure_ascii=False, indent=2)
-
-
-def field_def_from_json(data: str) -> FieldDef:
-    """Deserialize a field definition from a JSON string."""
-    return FieldDef.from_dict(json.loads(data))
+def _validate_struct_instance(struct_instance: StructInstance) -> None:
+    """Validate that encode input is a well-typed StructInstance."""
+    if not isinstance(struct_instance, StructInstance):
+        raise TypeError("encode() expects StructInstance for struct_instance")
+    for index, field_instance in enumerate(struct_instance.field_instances):
+        if not isinstance(field_instance, FieldInstance):
+            raise TypeError(
+                "encode() expects StructInstance.field_instances to be "
+                "list[FieldInstance]. "
+                f"Invalid item at index {index}: "
+                f"{type(field_instance).__name__}")
 
 
 def save_struct_def_dict(path: str | Path,
@@ -59,22 +61,39 @@ def load_struct_def_dict(path: str | Path) -> dict[str, StructDef]:
     }
 
 
+def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
+    """Resolve an InfoSize value that can be static or expression-based."""
+    if isinstance(value, str):
+        stleval = SltEval(env)
+        resolved_byte = stleval.eval(value)
+        return InfoSize(resolved_byte, 0)
+    return value
+
+
 def _resolve_offset(field_def: FieldDef, env: dict[str, Any]) -> InfoSize:
     """Resolve a field offset that can be static or expression-based."""
-    if isinstance(field_def.offset, str):
-        stleval = SltEval(env)
-        offset_byte = stleval.eval(field_def.offset)
-        return InfoSize(offset_byte, 0)
-    return field_def.offset
+    return _resolve_info_size(field_def.offset, env)
 
 
 def _resolve_size(field_def: FieldDef, env: dict[str, Any]) -> InfoSize:
     """Resolve a field size that can be static or expression-based."""
-    if isinstance(field_def.size, str):
-        stleval = SltEval(env)
-        size_byte = stleval.eval(field_def.size)
-        return InfoSize(size_byte, 0)
-    return field_def.size
+    return _resolve_info_size(field_def.size, env)
+
+
+def _is_padding_field_def(field_def: FieldDef) -> bool:
+    """Check whether a field definition represents padding."""
+    return (field_def.name.startswith("padding[")
+            and field_def.type in ["bytes", "bytearray"])
+
+
+def _info_size_to_bits(info_size: InfoSize) -> int:
+    """Convert InfoSize to an absolute bit count."""
+    return info_size.byte * 8 + info_size.bit
+
+
+def _info_size_from_bits(total_bits: int) -> InfoSize:
+    """Create InfoSize from an absolute bit count."""
+    return InfoSize(total_bits // 8, total_bits % 8)
 
 
 def _resolve_field_type(field_type: str | StructDef,
@@ -132,18 +151,15 @@ def _prepare_field_info(
 
     resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
     if isinstance(resolved_type, StructDef):
-        nested_bytes = encode(list(value), struct_def_dict)
+        if not isinstance(value, StructInstance):
+            raise TypeError(
+                "Nested StructDef fields must be encoded with StructInstance "
+                "values")
+        nested_bytes = encode(value, bytearray(), struct_def_dict)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
         info = _encode_primitive(resolved_type, value, size, field_def.scale)
     return offset, size, info
-
-
-def _normalize_parallel_count(parallel_count: int) -> int:
-    """Validate and normalize the requested parallel count."""
-    if parallel_count < 1:
-        raise ValueError("parallel_count must be greater than or equal to 1")
-    return parallel_count
 
 
 def _split_repeated_field(field_def: FieldDef,
@@ -161,21 +177,6 @@ def _split_repeated_field(field_def: FieldDef,
                     scale=field_def.scale,
                     repeat=None,
                     description=field_def.description)
-
-
-def _can_parallelize_repeated_field(field_def: FieldDef,
-                                    current_offset: InfoSize | None) -> bool:
-    """Check whether repeated-field processing can be parallelized safely."""
-    if current_offset is None:
-        return False
-    if isinstance(field_def.offset, str):
-        return False
-    if isinstance(field_def.size, str):
-        return False
-    if (isinstance(field_def.type, str)
-            and field_def.type not in _PRIMITIVE_TYPES):
-        return False
-    return True
 
 
 def encode_field(field_def: FieldDef,
@@ -199,15 +200,17 @@ def encode_field(field_def: FieldDef,
     bits_set(buf, offset, info)
 
 
-def encode(result: list[tuple[FieldDef, Any]],
-           struct_def_dict: dict[str, StructDef] | None = None,
-           parallel_count: int = 1) -> bytearray:
+def encode(struct_instance: StructInstance,
+           buf: bytearray,
+           struct_def_dict: dict[str, StructDef] | None = None) -> bytearray:
     """Encode decode() result into a bytearray.
 
     Parameters
     ----------
-    result : list[tuple[FieldDef, Any]]
-        The decode() result to encode.
+    struct_instance : StructInstance
+        The structure instance to encode.
+    buf : bytearray
+        The base bytearray instance to write into.
     struct_def_dict : dict[str, StructDef] | None, optional
         A dictionary of structure definitions, by default None.
 
@@ -216,49 +219,22 @@ def encode(result: list[tuple[FieldDef, Any]],
     bytearray
         The encoded bytearray.
     """
-    parallel_count = _normalize_parallel_count(parallel_count)
-    buf = bytearray()
+    _validate_struct_instance(struct_instance)
     env: dict[str, Any] = {}
+    has_padding = False
 
-    for field_def, value in result:
+    for field_value in struct_instance.field_instances:
+        field_def = field_value.field_def
+        if _is_padding_field_def(field_def):
+            has_padding = True
+        value = field_value.value
+        if _is_padding_field_def(field_def):
+            padding_size = _resolve_size(field_def, env)
+            value = bytearray(padding_size.bytes)
         if field_def.repeat is not None and field_def.repeat > 1:
             current_offset = _resolve_offset(field_def, env)
             resolved_size = _resolve_size(field_def, env)
             values = list(value)
-
-            if (parallel_count > 1 and isinstance(current_offset, InfoSize)
-                    and isinstance(field_def.size, InfoSize) and
-                    _can_parallelize_repeated_field(field_def, current_offset)):
-                offsets: list[InfoSize] = []
-                offset_cursor = current_offset
-                for _ in range(field_def.repeat):
-                    offsets.append(offset_cursor)
-                    offset_cursor += resolved_size
-
-                repeated_fields = [
-                    _split_repeated_field(field_def, index, env, offsets[index])
-                    for index in range(field_def.repeat)
-                ]
-
-                with ThreadPoolExecutor(max_workers=parallel_count) as executor:
-                    futures = [
-                        executor.submit(_prepare_field_info,
-                                        repeated_fields[index], values[index],
-                                        env.copy(), struct_def_dict)
-                        for index in range(field_def.repeat)
-                    ]
-                    prepared_results = [future.result() for future in futures]
-
-                for index, prepared in enumerate(prepared_results):
-                    if prepared is None:
-                        continue
-                    offset, size, info = prepared
-                    required_bytes = (offset + size).bytes
-                    if len(buf) < required_bytes:
-                        buf.extend(b"\x00" * (required_bytes - len(buf)))
-                    bits_set(buf, offset, info)
-                    env[repeated_fields[index].name] = values[index]
-                continue
 
             for i in range(field_def.repeat):
                 field_def_repeat = _split_repeated_field(
@@ -274,13 +250,18 @@ def encode(result: list[tuple[FieldDef, Any]],
         encode_field(field_def, value, buf, env, struct_def_dict)
         env[field_def.name] = value
 
+    if has_padding and struct_instance.size.bytes > len(buf):
+        buf.extend(b"\x00" * (struct_instance.size.bytes - len(buf)))
+
     return buf
 
 
-def decode_field(field_def: FieldDef,
-                 data: bytearray | bytes,
-                 env: dict[str, Any] | None = None,
-                 struct_def_dict: dict[str, StructDef] | None = None) -> Any:
+def decode_field(
+    field_def: FieldDef,
+    data: bytearray | bytes,
+    env: dict[str, Any] | None = None,
+    struct_def_dict: dict[str, StructDef] | None = None
+) -> FieldInstance | None:
     """Decode a single field from a bytearray according to a field definition.
 
     Parameters
@@ -295,8 +276,8 @@ def decode_field(field_def: FieldDef,
         A dictionary of structure definitions, by default None.
     Returns
     -------
-    Any
-        The decoded field value.
+    FieldInstance | None
+        The decoded field instance, or None when size is zero.
     """
     if env is None:
         env = {}
@@ -307,24 +288,28 @@ def decode_field(field_def: FieldDef,
     info = bits_get(data, offset, size, scale=field_def.scale)
     resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
     if isinstance(resolved_type, StructDef):
-        return decode(resolved_type, bytearray(info.to_bytes), struct_def_dict)
+        return FieldInstance(
+            field_def=field_def,
+            value=decode(resolved_type, bytearray(info.to_bytes),
+                         struct_def_dict),
+        )
     if resolved_type == "bool":
-        return info.to_bool
+        return FieldInstance(field_def=field_def, value=info.to_bool)
     if resolved_type == "signed int":
-        return info.to_signed_int
+        return FieldInstance(field_def=field_def, value=info.to_signed_int)
     if resolved_type in ["int", "unsigned int"]:
-        return info.to_unsigned_int
+        return FieldInstance(field_def=field_def, value=info.to_unsigned_int)
     if resolved_type == "float":
-        return info.to_float
+        return FieldInstance(field_def=field_def, value=info.to_float)
     if resolved_type in ["bytearray", "bytes"]:
-        return info.to_bytes
-    return info.raw_value
+        return FieldInstance(field_def=field_def, value=info.to_bytes)
+    return FieldInstance(field_def=field_def, value=info.raw_value)
 
 
-def decode(struct_def: StructDef | list[FieldDef],
-           data: bytearray | bytes,
-           struct_def_dict: dict[str, StructDef] | None = None,
-           parallel_count: int = 1) -> list[tuple[FieldDef, Any]]:
+def decode(
+        struct_def: StructDef | list[FieldDef],
+        data: bytearray | bytes,
+        struct_def_dict: dict[str, StructDef] | None = None) -> StructInstance:
     """Decode a bytearray into field values according to a layout.
 
     Parameters
@@ -337,62 +322,70 @@ def decode(struct_def: StructDef | list[FieldDef],
         A dictionary of structure definitions, by default None.
     Returns
     -------
-    list[tuple[FieldDef, Any]]
-        The decoded field values.
+    StructInstance
+        The decoded structure instance.
     """
-    parallel_count = _normalize_parallel_count(parallel_count)
-    result: list[tuple[FieldDef, Any]] = []
     env = {}
+    struct_def_obj = (struct_def if isinstance(struct_def, StructDef) else
+                      StructDef(fields=struct_def))
+    result = StructInstance(struct_def=struct_def_obj)
+    current_position = InfoSize(0, 0)
+    padding_index = 0
 
-    for field_def in _as_field_defs(struct_def):
+    def append_padding_until(target_offset: InfoSize) -> None:
+        nonlocal current_position, padding_index
+        start_bits = _info_size_to_bits(current_position)
+        end_bits = _info_size_to_bits(target_offset)
+        if end_bits <= start_bits:
+            return
+
+        chunk_start_bits = start_bits
+        while chunk_start_bits < end_bits:
+            next_boundary_bits = ((chunk_start_bits // 32) + 1) * 32
+            chunk_end_bits = min(end_bits, next_boundary_bits)
+            padding_field_def = FieldDef(
+                name=f"padding[{padding_index}]",
+                offset=_info_size_from_bits(chunk_start_bits),
+                size=_info_size_from_bits(chunk_end_bits - chunk_start_bits),
+                type="bytes",
+                description="Auto-generated padding",
+            )
+            padding_field_instance = decode_field(padding_field_def, data)
+            if padding_field_instance is not None:
+                result.append_field_instance(padding_field_instance)
+            padding_index += 1
+            chunk_start_bits = chunk_end_bits
+
+        current_position = target_offset
+
+    for field_def in _as_field_defs(struct_def_obj):
         # Handle non-repeated fields
         if field_def.repeat is None or field_def.repeat <= 1:
-            value = decode_field(field_def, data, env, struct_def_dict)
-            if value is not None:
-                env[field_def.name] = value
-                result.append((field_def, value))
+            resolved_offset = _resolve_offset(field_def, env)
+            append_padding_until(resolved_offset)
+            field_instance = decode_field(field_def, data, env, struct_def_dict)
+            if field_instance is not None:
+                env[field_instance.field_def.name] = field_instance.value
+                result.append_field_instance(field_instance)
+                current_position = (resolved_offset +
+                                    _resolve_size(field_def, env))
             continue
         # Handle repeated fields
         current_offset = _resolve_offset(field_def, env)
         resolved_size = _resolve_size(field_def, env)
-        if (parallel_count > 1 and isinstance(current_offset, InfoSize)
-                and isinstance(field_def.size, InfoSize)
-                and _can_parallelize_repeated_field(field_def, current_offset)):
-            offsets: list[InfoSize] = []
-            offset_cursor = current_offset
-            for _ in range(field_def.repeat):
-                offsets.append(offset_cursor)
-                offset_cursor += resolved_size
-
-            repeated_fields = [
-                _split_repeated_field(field_def, index, env, offsets[index])
-                for index in range(field_def.repeat)
-            ]
-
-            with ThreadPoolExecutor(max_workers=parallel_count) as executor:
-                futures = [
-                    executor.submit(decode_field, repeated_fields[index], data,
-                                    env.copy(), struct_def_dict)
-                    for index in range(field_def.repeat)
-                ]
-                decoded_values = [future.result() for future in futures]
-
-            for index, value in enumerate(decoded_values):
-                if value is not None:
-                    env[repeated_fields[index].name] = value
-                    result.append((repeated_fields[index], value))
-            continue
-
+        append_padding_until(current_offset)
         for i in range(field_def.repeat):
             field_def_repeat = _split_repeated_field(field_def, i, env,
                                                      current_offset)
-            value = decode_field(field_def_repeat, data, env, struct_def_dict)
-            if value is not None:
-                env[field_def_repeat.name] = value
-                result.append((field_def_repeat, value))
-            if isinstance(current_offset, InfoSize) and isinstance(
-                    resolved_size, InfoSize):
-                current_offset += resolved_size
+            field_instance = decode_field(field_def_repeat, data, env,
+                                          struct_def_dict)
+            if field_instance is not None:
+                env[field_instance.field_def.name] = field_instance.value
+                result.append_field_instance(field_instance)
+                current_position = current_offset + resolved_size
+            current_offset += resolved_size
+
+    append_padding_until(struct_def_obj.size)
 
     return result
 

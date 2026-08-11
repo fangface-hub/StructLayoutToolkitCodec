@@ -475,10 +475,11 @@ def test_type_expression_uses_previous_field_value():
         bytearray(),
     )
     decoded_int = decode(struct_def, encoded_int)
-    assert decoded_int.field_instances == [
-        FieldInstance(struct_def[0], 1),
-        FieldInstance(struct_def[1], 7),
-    ]
+    assert decoded_int.field_instances[0] == FieldInstance(struct_def[0], 1)
+    assert decoded_int.field_instances[1].field_def.offset == InfoSize(1, 0)
+    assert decoded_int.field_instances[1].field_def.size == InfoSize(1, 0)
+    assert decoded_int.field_instances[1].field_def.type == "int"
+    assert decoded_int.field_instances[1].value == 7
 
     encoded_float = encode(
         StructInstance(struct_def=StructDef(fields=struct_def),
@@ -490,7 +491,9 @@ def test_type_expression_uses_previous_field_value():
     )
     decoded_float = decode(struct_def, encoded_float)
     assert decoded_float.field_instances[0] == FieldInstance(struct_def[0], 2)
-    assert decoded_float.field_instances[1].field_def == struct_def[1]
+    assert decoded_float.field_instances[1].field_def.offset == InfoSize(1, 0)
+    assert decoded_float.field_instances[1].field_def.size == InfoSize(4, 0)
+    assert decoded_float.field_instances[1].field_def.type == "float"
     assert decoded_float.field_instances[1].value == 1.5
 
 

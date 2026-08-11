@@ -319,34 +319,45 @@ def decode_field(
         return None
     info = bits_get(data, offset, size, scale=field_def.scale)
     resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
+    resolved_field_def = FieldDef(
+        name=field_def.name,
+        offset=offset,
+        size=size,
+        type=resolved_type,
+        scale=field_def.scale,
+        repeat=field_def.repeat,
+        description=field_def.description,
+        range_expression=field_def.range_expression,
+        enum_def=field_def.enum_def,
+    )
     if isinstance(resolved_type, StructDef):
         return FieldInstance(
-            field_def=field_def,
+            field_def=resolved_field_def,
             value=decode(resolved_type, bytearray(info.to_bytes),
                          struct_def_dict, enum_def_dict,
                          padding_alignment_bits),
         )
     if resolved_type == "bool":
-        return FieldInstance.from_value(field_def,
+        return FieldInstance.from_value(resolved_field_def,
                                         info.to_bool,
                                         enum_def_dict=enum_def_dict)
     if resolved_type == "signed int":
-        return FieldInstance.from_value(field_def,
+        return FieldInstance.from_value(resolved_field_def,
                                         info.to_signed_int,
                                         enum_def_dict=enum_def_dict)
     if resolved_type in ["int", "unsigned int"]:
-        return FieldInstance.from_value(field_def,
+        return FieldInstance.from_value(resolved_field_def,
                                         info.to_unsigned_int,
                                         enum_def_dict=enum_def_dict)
     if resolved_type == "float":
-        return FieldInstance.from_value(field_def,
+        return FieldInstance.from_value(resolved_field_def,
                                         info.to_float,
                                         enum_def_dict=enum_def_dict)
     if resolved_type in ["bytearray", "bytes"]:
-        return FieldInstance.from_value(field_def,
+        return FieldInstance.from_value(resolved_field_def,
                                         info.to_bytes,
                                         enum_def_dict=enum_def_dict)
-    return FieldInstance.from_value(field_def,
+    return FieldInstance.from_value(resolved_field_def,
                                     info.raw_value,
                                     enum_def_dict=enum_def_dict)
 

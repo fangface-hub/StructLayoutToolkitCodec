@@ -4,12 +4,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from functools import total_ordering
 from typing import Any
 
 from sltcalc import SltEval
 from sltcore import Info, InfoSize
 
 
+@total_ordering
 @dataclass(frozen=True)
 class EnumDef:
     """An enumeration definition."""
@@ -67,7 +69,22 @@ class EnumDef:
         """Create an enum definition from a JSON string."""
         return cls.from_dict(json.loads(data))
 
+    def __lt__(self, other: object) -> bool:
+        """Compare enum definitions using a stable serialized sort key."""
+        if not isinstance(other, EnumDef):
+            return NotImplemented
+        return self._sort_key() < other._sort_key()
 
+    def _sort_key(self) -> tuple[Any, ...]:
+        """Build a stable comparison key for ordering enum definitions."""
+        return (
+            self.name,
+            "" if self.description is None else self.description,
+            json.dumps(self.values, sort_keys=True),
+        )
+
+
+@total_ordering
 @dataclass(frozen=True)
 class FieldDef:
     """A field in a structured layout."""
@@ -283,6 +300,7 @@ class FieldDef:
             sort_keys=True)
 
 
+@total_ordering
 @dataclass(frozen=True)
 class FieldInstance:
     """A decoded/encodable field value with its field definition."""
@@ -355,6 +373,7 @@ class FieldInstance:
         return None
 
 
+@total_ordering
 @dataclass(frozen=True)
 class StructDef:
     """A structured layout definition that groups multiple fields."""
@@ -368,6 +387,21 @@ class StructDef:
         default_factory=list,
         metadata={"desc": "The fields of the structure"},
     )
+
+    def __lt__(self, other: object) -> bool:
+        """Compare structure definitions using a stable serialized sort key."""
+        if not isinstance(other, StructDef):
+            return NotImplemented
+        return self._sort_key() < other._sort_key()
+
+    def _sort_key(self) -> tuple[Any, ...]:
+        """Build a stable comparison key for ordering structure definitions."""
+        return (
+            self.name,
+            "" if self.description is None else self.description,
+            json.dumps([field.to_dict() for field in self.fields],
+                       sort_keys=True),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert this structure definition to JSON-serializable data."""
@@ -402,6 +436,7 @@ class StructDef:
         return cls.from_dict(json.loads(data))
 
 
+@total_ordering
 @dataclass
 class StructInstance:
     """A decoded/encodable structure instance."""
@@ -454,6 +489,23 @@ class StructInstance:
         """Return one field instance by index."""
         return self.field_instances[index]
 
+    def __lt__(self, other: object) -> bool:
+        """Compare structure instances using a stable serialized sort key."""
+        if not isinstance(other, StructInstance):
+            return NotImplemented
+        return self._sort_key() < other._sort_key()
+
+    def _sort_key(self) -> tuple[Any, ...]:
+        """Build a stable comparison key for ordering structure instances."""
+        return (
+            self.struct_def._sort_key(),
+            json.dumps([
+                field_instance.to_dict()
+                for field_instance in self.field_instances
+            ],
+                       sort_keys=True),
+        )
+
     def _sort_field_instances(self) -> None:
         """Keep field instances sorted by FieldDef order."""
         self.field_instances.sort()
@@ -466,14 +518,25 @@ class StructInstance:
         ]
         non_padding_instances.sort()
 
+        has_unresolved_layout = any(
+            not isinstance(field_instance.field_def.offset, InfoSize)
+            or not isinstance(field_instance.field_def.size, InfoSize)
+            for field_instance in non_padding_instances)
+        if has_unresolved_layout:
+            # Layout expressions are resolved later in codec paths.
+            self.field_instances = non_padding_instances
+            self._sort_field_instances()
+            self._update_size()
+            return
+
         rebuilt_instances: list[FieldInstance] = []
         current_offset = InfoSize(0, 0)
         padding_index = 0
 
         for field_instance in non_padding_instances:
             field_def = field_instance.field_def
-            field_offset = self._resolve_field_offset(field_def)
-            field_size = self._resolve_field_size(field_def)
+            field_offset = field_def.offset
+            field_size = field_def.size
             if field_offset > current_offset:
                 gap_size = field_offset - current_offset
                 if gap_size.byte > 0 or gap_size.bit > 0:
@@ -521,25 +584,15 @@ class StructInstance:
         max_end_offset = InfoSize(0, 0)
         for field_instance in self.field_instances:
             field_def = field_instance.field_def
-            field_offset = self._resolve_field_offset(field_def)
-            field_size = self._resolve_field_size(field_def)
+            if not isinstance(field_def.offset, InfoSize):
+                continue
+            if not isinstance(field_def.size, InfoSize):
+                continue
+            field_offset = field_def.offset
+            field_size = field_def.size
             field_end = field_offset + field_size
             if field_end > max_end_offset:
                 max_end_offset = field_end
 
         if max_end_offset > self.size:
             self.size = max_end_offset
-
-    @staticmethod
-    def _resolve_field_offset(field_def: FieldDef) -> InfoSize:
-        """Resolve field offsets to InfoSize values when possible."""
-        if isinstance(field_def.offset, InfoSize):
-            return field_def.offset
-        return InfoSize(0, 0)
-
-    @staticmethod
-    def _resolve_field_size(field_def: FieldDef) -> InfoSize:
-        """Resolve field sizes to InfoSize values when possible."""
-        if isinstance(field_def.size, InfoSize):
-            return field_def.size
-        return InfoSize(0, 0)

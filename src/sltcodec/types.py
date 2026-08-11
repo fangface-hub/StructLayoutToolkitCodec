@@ -1,14 +1,71 @@
 """Type definitions for structured layout metadata."""
 from __future__ import annotations
 
-import importlib
 import json
 import re
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any
 
+from sltcalc import SltEval
 from sltcore import Info, InfoSize
+
+
+@dataclass(frozen=True)
+class EnumDef:
+    """An enumeration definition."""
+    name: str = field(default_factory=str,
+                      metadata={"desc": "The name of the enum"})
+    description: str | None = field(
+        default=None, metadata={"desc": "The description of the enum"})
+    values: dict[str, int] = field(
+        default_factory=dict,
+        metadata={"desc": "The mapping of enum names to integer values"},
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert this enum definition to a JSON-serializable dictionary."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "values": self.values,
+        }
+
+    def to_json(self) -> str:
+        """Convert this enum definition to a JSON string."""
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EnumDef":
+        """Create an enum definition from a JSON-serializable dictionary."""
+        name = data.get("name", "")
+        description = data.get("description")
+        values = data.get("values", {})
+        return cls(name=name, description=description, values=values)
+
+    def serialize(self) -> dict[str, Any]:
+        """Serialize this enum definition with an explicit type tag."""
+        return {
+            "__type__": "EnumDef",
+            "name": self.name,
+            "description": self.description,
+            "values": self.values,
+        }
+
+    @classmethod
+    def deserialize(cls, data: dict[str, Any]) -> "EnumDef":
+        """Deserialize an enum definition from a typed dictionary."""
+        if data.get("__type__") != "EnumDef":
+            raise ValueError("Invalid EnumDef payload")
+        return cls(
+            name=data.get("name", ""),
+            description=data.get("description"),
+            values=data.get("values", {}),
+        )
+
+    @classmethod
+    def from_json(cls, data: str) -> "EnumDef":
+        """Create an enum definition from a JSON string."""
+        return cls.from_dict(json.loads(data))
 
 
 @dataclass(frozen=True)
@@ -30,8 +87,8 @@ class FieldDef:
         default=None, metadata={"desc": "The description of the field"})
     range_expression: str | None = field(
         default=None, metadata={"desc": "The value range expression"})
-    enum_type: type[Enum] | None = field(default=None,
-                                         metadata={"desc": "The enum type"})
+    enum_def: EnumDef | None = field(
+        default=None, metadata={"desc": "The enum definition for the field"})
 
     def split_repeat(self,
                      index: int,
@@ -58,7 +115,7 @@ class FieldDef:
                         repeat=None,
                         description=self.description,
                         range_expression=split_range_expression,
-                        enum_type=self.enum_type)
+                        enum_def=self.enum_def)
 
     @staticmethod
     def _replace_name_in_expression(value: Any, old_name: str,
@@ -79,15 +136,33 @@ class FieldDef:
     def to_dict(self) -> dict[str, Any]:
         """Convert this field definition to a JSON-serializable dictionary."""
         return {
-            "name": self.name,
-            "offset": self._serialize_value(self.offset),
-            "size": self._serialize_value(self.size),
-            "type": self._serialize_type(self.type),
-            "scale": self.scale,
-            "repeat": self.repeat,
-            "description": self.description,
-            "range_expression": self.range_expression,
-            "enum_type": self._serialize_enum_type(self.enum_type),
+            "name":
+            self.name,
+            "offset":
+            self.offset.serialize() if isinstance(self.offset,
+                                                  (Info,
+                                                   InfoSize)) else self.offset,
+            "size":
+            self.size.serialize() if isinstance(self.size,
+                                                (Info,
+                                                 InfoSize)) else self.size,
+            "type": {
+                "__type__": "StructDef",
+                "fields": self.type.to_dict(),
+            } if isinstance(self.type, StructDef) else {
+                "__type__": "StructDef",
+                "fields": [field.to_dict() for field in self.type],
+            } if isinstance(self.type, list) else self.type,
+            "scale":
+            self.scale,
+            "repeat":
+            self.repeat,
+            "description":
+            self.description,
+            "range_expression":
+            self.range_expression,
+            "enum_def":
+            None if self.enum_def is None else self.enum_def.serialize(),
         }
 
     def to_json(self) -> str:
@@ -97,99 +172,74 @@ class FieldDef:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FieldDef":
         """Create a field definition from a JSON-serializable dictionary."""
+        name = data.get("name", "")
+        offset_data = data.get("offset")
+        size_data = data.get("size")
+        type_data = data.get("type")
+        scale = data.get("scale", 1.0)
+        repeat = data.get("repeat")
+        description = data.get("description")
+        range_expression = data.get("range_expression")
+        enum_def_data = data.get("enum_def")
+
+        def _deserialize_info_like(value: Any) -> Any:
+            if isinstance(value, dict):
+                value_type = value.get("__type__")
+                if value_type == "Info":
+                    return Info.deserialize(json.dumps(value))
+                if value_type == "InfoSize":
+                    return InfoSize.deserialize(json.dumps(value))
+                return value
+            if not isinstance(value, str):
+                return value
+            try:
+                parsed_value = json.loads(value)
+            except json.JSONDecodeError:
+                return value
+            if (isinstance(parsed_value, dict)
+                    and parsed_value.get("__type__") == "Info"):
+                return Info.deserialize(value)
+            if (isinstance(parsed_value, dict)
+                    and parsed_value.get("__type__") == "InfoSize"):
+                return InfoSize.deserialize(value)
+            return value
+
+        offset = _deserialize_info_like(offset_data)
+        size = _deserialize_info_like(size_data)
+
+        if (isinstance(type_data, dict)
+                and type_data.get("__type__") == "StructDef"):
+            type_value = StructDef.from_dict(type_data["fields"])
+        elif isinstance(type_data, list):
+            # Backward-compatibility for legacy list-based nested types.
+            type_value = StructDef.from_dict(type_data)
+        else:
+            type_value = type_data
+
+        if enum_def_data is None:
+            enum_def = None
+        elif (isinstance(enum_def_data, dict)
+              and enum_def_data.get("__type__") == "EnumDef"):
+            enum_def = EnumDef.deserialize(enum_def_data)
+        else:
+            enum_def = None
+
         return cls(
-            name=data.get("name", ""),
-            offset=cls._deserialize_value(data.get("offset")),
-            size=cls._deserialize_value(data.get("size")),
-            type=cls._deserialize_type(data.get("type")),
-            scale=data.get("scale", 1.0),
-            repeat=data.get("repeat"),
-            description=data.get("description"),
-            range_expression=data.get("range_expression"),
-            enum_type=cls._deserialize_enum_type(data.get("enum_type")),
+            name=name,
+            offset=offset,
+            size=size,
+            type=type_value,
+            scale=scale,
+            repeat=repeat,
+            description=description,
+            range_expression=range_expression,
+            enum_def=enum_def,
         )
 
     @classmethod
     def from_json(cls, data: str) -> "FieldDef":
         """Create a field definition from a JSON string."""
         return cls.from_dict(json.loads(data))
-
-    @staticmethod
-    def _serialize_value(value: Any) -> Any:
-        if isinstance(value, Info):
-            return {
-                "__type__": "Info",
-                "value": value.to_json(),
-            }
-        if isinstance(value, InfoSize):
-            return {
-                "__type__": "InfoSize",
-                "value": value.to_json(),
-            }
-        return value
-
-    @classmethod
-    def _deserialize_value(cls, value: Any) -> Any:
-        if isinstance(value, dict) and value.get("__type__") == "Info":
-            return Info.from_json(value["value"])
-        if isinstance(value, dict) and value.get("__type__") == "InfoSize":
-            return InfoSize.from_json(value["value"])
-        return value
-
-    @staticmethod
-    def _serialize_type(value: Any) -> Any:
-        if isinstance(value, StructDef):
-            return {
-                "__type__": "StructDef",
-                "fields": value.to_dict(),
-            }
-        if isinstance(value, list):
-            # Backward-compatibility for legacy list-based nested types.
-            return {
-                "__type__": "StructDef",
-                "fields": [field.to_dict() for field in value],
-            }
-        return value
-
-    @classmethod
-    def _deserialize_type(cls, value: Any) -> Any:
-        if isinstance(value, dict) and value.get("__type__") == "StructDef":
-            return StructDef.from_dict(value["fields"])
-        if isinstance(value, list):
-            # Backward-compatibility for legacy list-based nested types.
-            return StructDef.from_dict(value)
-        return value
-
-    @staticmethod
-    def _serialize_enum_type(value: type[Enum] | None) -> Any:
-        if value is None:
-            return None
-        return {
-            "__type__": "EnumType",
-            "module": value.__module__,
-            "qualname": value.__qualname__,
-        }
-
-    @classmethod
-    def _deserialize_enum_type(cls, value: Any) -> type[Enum] | None:
-        if value is None:
-            return None
-        if not isinstance(value, dict) or value.get("__type__") != "EnumType":
-            return None
-        module_name = value.get("module")
-        qualname = value.get("qualname")
-        if not isinstance(module_name, str) or not isinstance(qualname, str):
-            return None
-        try:
-            module = importlib.import_module(module_name)
-            enum_type: Any = module
-            for attr in qualname.split("."):
-                enum_type = getattr(enum_type, attr)
-            if isinstance(enum_type, type) and issubclass(enum_type, Enum):
-                return enum_type
-        except (ImportError, AttributeError, TypeError):
-            return None
-        return None
 
     def _sort_key(self) -> tuple[Any, ...]:
         """Build a stable comparison key for ordering field definitions."""
@@ -202,7 +252,7 @@ class FieldDef:
             -1 if self.repeat is None else self.repeat,
             "" if self.description is None else self.description,
             "" if self.range_expression is None else self.range_expression,
-            self._sortable_enum_type(self.enum_type),
+            self._sortable_enum_type(self.enum_def),
         )
 
     @staticmethod
@@ -220,11 +270,17 @@ class FieldDef:
         return (1, value)
 
     @staticmethod
-    def _sortable_enum_type(value: type[Enum] | None) -> str:
-        """Build a comparable key for enum type metadata."""
+    def _sortable_enum_type(value: EnumDef | None) -> str:
+        """Build a comparable key for enum definition metadata."""
         if value is None:
             return ""
-        return f"{value.__module__}.{value.__qualname__}"
+        return json.dumps(
+            {
+                "name": value.name,
+                "description": value.description,
+                "values": value.values,
+            },
+            sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -232,6 +288,10 @@ class FieldInstance:
     """A decoded/encodable field value with its field definition."""
     field_def: FieldDef = field(metadata={"desc": "The field definition"})
     value: Any = field(metadata={"desc": "The decoded/encodable value"})
+    enum_item: tuple[str, int] | None = field(
+        default=None,
+        metadata={"desc": "Matched enum item for this value"},
+    )
     is_padding: bool = field(
         default=False,
         metadata={"desc": "Whether this field instance represents padding"},
@@ -242,6 +302,57 @@ class FieldInstance:
         if not isinstance(other, FieldInstance):
             return NotImplemented
         return self.field_def < other.field_def
+
+    def range_check(self, env: dict[str, Any] | None = None) -> Any | None:
+        """Evaluate range_expression and return its evaluated result."""
+        range_expression = self.field_def.range_expression
+        if range_expression is None:
+            return None
+
+        eval_env = {} if env is None else dict(env)
+        eval_env[self.field_def.name] = self.value
+        stleval = SltEval(eval_env)
+        return stleval.eval(range_expression)
+
+    @classmethod
+    def from_value(cls,
+                   field_def: FieldDef,
+                   value: Any,
+                   enum_def_dict: dict[str, EnumDef] | None = None,
+                   is_padding: bool = False) -> "FieldInstance":
+        """Create a FieldInstance and attach a matched enum item if any."""
+        enum_def = cls._resolve_enum_def(field_def, enum_def_dict)
+        enum_item = cls._resolve_enum_item(enum_def, value)
+        return cls(field_def=field_def,
+                   value=value,
+                   enum_item=enum_item,
+                   is_padding=is_padding)
+
+    @staticmethod
+    def _resolve_enum_def(
+            field_def: FieldDef,
+            enum_def_dict: dict[str, EnumDef] | None) -> EnumDef | None:
+        """Resolve enum definition from field metadata or lookup dictionary."""
+        if field_def.enum_def is not None:
+            return field_def.enum_def
+        if not enum_def_dict:
+            return None
+        if isinstance(field_def.type, str) and field_def.type in enum_def_dict:
+            return enum_def_dict[field_def.type]
+        return enum_def_dict.get(field_def.name)
+
+    @staticmethod
+    def _resolve_enum_item(enum_def: EnumDef | None,
+                           value: Any) -> tuple[str, int] | None:
+        """Resolve one enum values item that matches the given value."""
+        if enum_def is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        for enum_name, enum_value in enum_def.values.items():
+            if enum_value == value:
+                return enum_name, enum_value
+        return None
 
 
 @dataclass(frozen=True)
@@ -279,12 +390,11 @@ class StructDef:
         if isinstance(data, list):
             # Backward-compatibility for legacy list-only StructDef payloads.
             return cls(fields=[FieldDef.from_dict(item) for item in data])
-        return cls(name=data.get("name", ""),
-                   description=data.get("description", ""),
-                   fields=[
-                       FieldDef.from_dict(item)
-                       for item in data.get("fields", [])
-                   ])
+        name = data.get("name", "")
+        description = data.get("description", "")
+        fields_data = data.get("fields", [])
+        fields = [FieldDef.from_dict(item) for item in fields_data]
+        return cls(name=name, description=description, fields=fields)
 
     @classmethod
     def from_json(cls, data: str) -> "StructDef":

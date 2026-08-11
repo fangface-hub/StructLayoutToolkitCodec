@@ -8,7 +8,7 @@ from typing import Any
 from sltcalc import SltEval
 from sltcore import Info, InfoSize, bits_get, bits_set
 
-from .types import FieldDef, FieldInstance, StructDef, StructInstance
+from .types import EnumDef, FieldDef, FieldInstance, StructDef, StructInstance
 
 _PRIMITIVE_TYPES = {
     "bool",
@@ -19,6 +19,8 @@ _PRIMITIVE_TYPES = {
     "bytearray",
     "bytes",
 }
+
+_DEFAULT_PADDING_ALIGNMENT_BITS = 32
 
 
 def _as_field_defs(struct_def: StructDef | list[FieldDef]) -> list[FieldDef]:
@@ -96,6 +98,16 @@ def _info_size_from_bits(total_bits: int) -> InfoSize:
     return InfoSize(total_bits >> 3, total_bits & 0x7)
 
 
+def _validate_padding_alignment_bits(padding_alignment_bits: int) -> None:
+    """Validate padding alignment as a positive power-of-two bit size."""
+    if (isinstance(padding_alignment_bits, bool)
+            or not isinstance(padding_alignment_bits, int)
+            or padding_alignment_bits <= 0
+            or (padding_alignment_bits & (padding_alignment_bits - 1)) != 0):
+        raise ValueError(
+            "padding_alignment_bits must be a positive power of two")
+
+
 def _resolve_field_type(field_type: str | StructDef,
                         struct_def_dict: dict[str, StructDef] | None = None,
                         env: dict[str, Any] | None = None) -> str | StructDef:
@@ -141,7 +153,9 @@ def _prepare_field_info(
     field_def: FieldDef,
     value: Any,
     env: dict[str, Any],
-    struct_def_dict: dict[str, StructDef] | None = None
+    struct_def_dict: dict[str, StructDef] | None = None,
+    enum_def_dict: dict[str, EnumDef] | None = None,
+    padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> tuple[InfoSize, InfoSize, Info] | None:
     """Resolve a field definition into an offset, size, and info payload."""
     offset = _resolve_offset(field_def, env)
@@ -155,7 +169,11 @@ def _prepare_field_info(
             raise TypeError(
                 "Nested StructDef fields must be encoded with StructInstance "
                 "values")
-        nested_bytes = encode(value, bytearray(), struct_def_dict)
+        nested_bytes = encode(value,
+                              bytearray(),
+                              struct_def_dict,
+                              enum_def_dict,
+                              padding_alignment_bits=padding_alignment_bits)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
         info = _encode_primitive(resolved_type, value, size, field_def.scale)
@@ -175,16 +193,21 @@ def _split_repeated_field(field_def: FieldDef,
                                   size=resolved_size)
 
 
-def encode_field(field_def: FieldDef,
-                 value: Any,
-                 buf: bytearray,
-                 env: dict[str, Any] | None = None,
-                 struct_def_dict: dict[str, StructDef] | None = None) -> None:
+def encode_field(
+    field_def: FieldDef,
+    value: Any,
+    buf: bytearray,
+    env: dict[str, Any] | None = None,
+    struct_def_dict: dict[str, StructDef] | None = None,
+    enum_def_dict: dict[str, EnumDef] | None = None,
+    padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
+) -> None:
     """Encode a single field into a bytearray."""
     if env is None:
         env = {}
 
-    prepared = _prepare_field_info(field_def, value, env, struct_def_dict)
+    prepared = _prepare_field_info(field_def, value, env, struct_def_dict,
+                                   enum_def_dict, padding_alignment_bits)
     if prepared is None:
         return
 
@@ -196,9 +219,13 @@ def encode_field(field_def: FieldDef,
     bits_set(buf, offset, info)
 
 
-def encode(struct_instance: StructInstance,
-           buf: bytearray,
-           struct_def_dict: dict[str, StructDef] | None = None) -> bytearray:
+def encode(
+    struct_instance: StructInstance,
+    buf: bytearray,
+    struct_def_dict: dict[str, StructDef] | None = None,
+    enum_def_dict: dict[str, EnumDef] | None = None,
+    padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
+) -> bytearray:
     """Encode decode() result into a bytearray.
 
     Parameters
@@ -209,6 +236,10 @@ def encode(struct_instance: StructInstance,
         The base bytearray instance to write into.
     struct_def_dict : dict[str, StructDef] | None, optional
         A dictionary of structure definitions, by default None.
+    enum_def_dict : dict[str, EnumDef] | None, optional
+        A dictionary of enum definitions, by default None.
+    padding_alignment_bits : int, optional
+        The padding alignment boundary in bits, by default 32.
 
     Returns
     -------
@@ -216,6 +247,7 @@ def encode(struct_instance: StructInstance,
         The encoded bytearray.
     """
     _validate_struct_instance(struct_instance)
+    _validate_padding_alignment_bits(padding_alignment_bits)
     env: dict[str, Any] = {}
     has_padding = False
 
@@ -236,14 +268,16 @@ def encode(struct_instance: StructInstance,
                 field_def_repeat = _split_repeated_field(
                     field_def, i, env, current_offset)
                 encode_field(field_def_repeat, values[i], buf, env,
-                             struct_def_dict)
+                             struct_def_dict, enum_def_dict,
+                             padding_alignment_bits)
                 env[field_def_repeat.name] = values[i]
                 if isinstance(current_offset, InfoSize) and isinstance(
                         resolved_size, InfoSize):
                     current_offset += resolved_size
             continue
 
-        encode_field(field_def, value, buf, env, struct_def_dict)
+        encode_field(field_def, value, buf, env, struct_def_dict, enum_def_dict,
+                     padding_alignment_bits)
         env[field_def.name] = value
 
     if has_padding and struct_instance.size.bytes > len(buf):
@@ -256,7 +290,9 @@ def decode_field(
     field_def: FieldDef,
     data: bytearray | bytes,
     env: dict[str, Any] | None = None,
-    struct_def_dict: dict[str, StructDef] | None = None
+    struct_def_dict: dict[str, StructDef] | None = None,
+    enum_def_dict: dict[str, EnumDef] | None = None,
+    padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> FieldInstance | None:
     """Decode a single field from a bytearray according to a field definition.
 
@@ -287,25 +323,41 @@ def decode_field(
         return FieldInstance(
             field_def=field_def,
             value=decode(resolved_type, bytearray(info.to_bytes),
-                         struct_def_dict),
+                         struct_def_dict, enum_def_dict,
+                         padding_alignment_bits),
         )
     if resolved_type == "bool":
-        return FieldInstance(field_def=field_def, value=info.to_bool)
+        return FieldInstance.from_value(field_def,
+                                        info.to_bool,
+                                        enum_def_dict=enum_def_dict)
     if resolved_type == "signed int":
-        return FieldInstance(field_def=field_def, value=info.to_signed_int)
+        return FieldInstance.from_value(field_def,
+                                        info.to_signed_int,
+                                        enum_def_dict=enum_def_dict)
     if resolved_type in ["int", "unsigned int"]:
-        return FieldInstance(field_def=field_def, value=info.to_unsigned_int)
+        return FieldInstance.from_value(field_def,
+                                        info.to_unsigned_int,
+                                        enum_def_dict=enum_def_dict)
     if resolved_type == "float":
-        return FieldInstance(field_def=field_def, value=info.to_float)
+        return FieldInstance.from_value(field_def,
+                                        info.to_float,
+                                        enum_def_dict=enum_def_dict)
     if resolved_type in ["bytearray", "bytes"]:
-        return FieldInstance(field_def=field_def, value=info.to_bytes)
-    return FieldInstance(field_def=field_def, value=info.raw_value)
+        return FieldInstance.from_value(field_def,
+                                        info.to_bytes,
+                                        enum_def_dict=enum_def_dict)
+    return FieldInstance.from_value(field_def,
+                                    info.raw_value,
+                                    enum_def_dict=enum_def_dict)
 
 
 def decode(
-        struct_def: StructDef | list[FieldDef],
-        data: bytearray | bytes,
-        struct_def_dict: dict[str, StructDef] | None = None) -> StructInstance:
+    struct_def: StructDef | list[FieldDef],
+    data: bytearray | bytes,
+    struct_def_dict: dict[str, StructDef] | None = None,
+    enum_def_dict: dict[str, EnumDef] | None = None,
+    padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
+) -> StructInstance:
     """Decode a bytearray into field values according to a layout.
 
     Parameters
@@ -316,11 +368,16 @@ def decode(
         The data to decode.
     struct_def_dict : dict[str, StructDef] | None, optional
         A dictionary of structure definitions, by default None.
+    enum_def_dict : dict[str, EnumDef] | None, optional
+        A dictionary of enum definitions, by default None.
+    padding_alignment_bits : int, optional
+        The padding alignment boundary in bits, by default 32.
     Returns
     -------
     StructInstance
         The decoded structure instance.
     """
+    _validate_padding_alignment_bits(padding_alignment_bits)
     env = {}
     struct_def_obj = (struct_def if isinstance(struct_def, StructDef) else
                       StructDef(fields=struct_def))
@@ -337,8 +394,11 @@ def decode(
 
         chunk_start_bits = start_bits
         while chunk_start_bits < end_bits:
-            next_boundary_bits = ((chunk_start_bits // 32) + 1) * 32
-            chunk_end_bits = min(end_bits, next_boundary_bits)
+            chunk_start = _info_size_from_bits(chunk_start_bits)
+            bits_to_boundary = _info_size_to_bits(
+                chunk_start.align_to(padding_alignment_bits))
+            chunk_size_bits = bits_to_boundary or padding_alignment_bits
+            chunk_end_bits = min(end_bits, chunk_start_bits + chunk_size_bits)
             padding_field_def = FieldDef(
                 name=f"padding[{padding_index}]",
                 offset=_info_size_from_bits(chunk_start_bits),
@@ -359,7 +419,8 @@ def decode(
         if field_def.repeat is None or field_def.repeat <= 1:
             resolved_offset = _resolve_offset(field_def, env)
             append_padding_until(resolved_offset)
-            field_instance = decode_field(field_def, data, env, struct_def_dict)
+            field_instance = decode_field(field_def, data, env, struct_def_dict,
+                                          enum_def_dict, padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
@@ -374,7 +435,8 @@ def decode(
             field_def_repeat = _split_repeated_field(field_def, i, env,
                                                      current_offset)
             field_instance = decode_field(field_def_repeat, data, env,
-                                          struct_def_dict)
+                                          struct_def_dict, enum_def_dict,
+                                          padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)

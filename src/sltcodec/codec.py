@@ -170,13 +170,9 @@ def _split_repeated_field(field_def: FieldDef,
     resolved_offset = (_resolve_offset(field_def, env)
                        if offset is None else offset)
     resolved_size = _resolve_size(field_def, env)
-    return FieldDef(name=f"{field_def.name}[{index}]",
-                    offset=resolved_offset,
-                    size=resolved_size,
-                    type=field_def.type,
-                    scale=field_def.scale,
-                    repeat=None,
-                    description=field_def.description)
+    return field_def.split_repeat(index,
+                                  offset=resolved_offset,
+                                  size=resolved_size)
 
 
 def encode_field(field_def: FieldDef,

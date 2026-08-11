@@ -1,4 +1,5 @@
 """Tests for the sltcodec module."""
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,12 @@ from sltcodec import (FieldDef, FieldInstance, StructDef, StructInstance,
                       decode, encode, load_struct_def_dict,
                       save_struct_def_dict)
 from sltcodec.codec import decode_field
+
+
+class ValueKind(Enum):
+    """Enum used for FieldDef enum_type metadata tests."""
+    A = 1
+    B = 2
 
 
 def test_encode_and_decode_round_trip():
@@ -146,6 +153,48 @@ def test_repeated_field_preserves_description():
         decoded.field_instances[1].field_def.description == "A repeated value")
 
 
+def test_repeated_field_preserves_range_and_enum_metadata():
+    """Test repeated fields preserve range/enum metadata on decoded entries."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         repeat=2,
+                         range_expression="0 <= value <= 255",
+                         enum_type=ValueKind)
+
+    encoded = encode(
+        StructInstance(struct_def=StructDef(fields=[field_def]),
+                       field_instances=[FieldInstance(field_def, [1, 2])]),
+        bytearray(),
+    )
+    decoded = decode([field_def], encoded)
+
+    assert decoded.field_instances[0].field_def.range_expression == (
+        "0 <= value[0] <= 255")
+    assert decoded.field_instances[1].field_def.range_expression == (
+        "0 <= value[1] <= 255")
+    assert decoded.field_instances[0].field_def.enum_type is ValueKind
+    assert decoded.field_instances[1].field_def.enum_type is ValueKind
+
+
+def test_split_repeat_replaces_name_in_range_expression():
+    """Test split_repeat replaces field-name tokens in range expressions."""
+    field_def = FieldDef(
+        name="value",
+        offset=InfoSize(0, 0),
+        size=InfoSize(1, 0),
+        type="unsigned int",
+        repeat=2,
+        range_expression=("0 <= value and value <= limit and value_count"))
+
+    split = field_def.split_repeat(1)
+
+    assert split.name == "value[1]"
+    assert split.range_expression == (
+        "0 <= value[1] and value[1] <= limit and value_count")
+
+
 def test_field_def_json_round_trip():
     """Test that FieldDef can be serialized and deserialized from JSON."""
     field_def = FieldDef(name="value",
@@ -169,12 +218,16 @@ def test_field_def_to_json_from_json_round_trip():
                          type="unsigned int",
                          scale=2.0,
                          repeat=3,
-                         description="A repeated value")
+                         description="A repeated value",
+                         range_expression="0 <= value <= 255",
+                         enum_type=ValueKind)
 
     payload = field_def.to_json()
     restored = FieldDef.from_json(payload)
 
     assert restored == field_def
+    assert restored.range_expression == "0 <= value <= 255"
+    assert restored.enum_type is ValueKind
 
 
 def test_struct_def_metadata_json_round_trip():

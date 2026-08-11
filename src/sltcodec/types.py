@@ -1,8 +1,11 @@
 """Type definitions for structured layout metadata."""
 from __future__ import annotations
 
+import importlib
 import json
+import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from sltcore import Info, InfoSize
@@ -25,18 +28,47 @@ class FieldDef:
         default=None, metadata={"desc": "The repeat count of the field"})
     description: str | None = field(
         default=None, metadata={"desc": "The description of the field"})
+    range_expression: str | None = field(
+        default=None, metadata={"desc": "The value range expression"})
+    enum_type: type[Enum] | None = field(default=None,
+                                         metadata={"desc": "The enum type"})
 
     def split_repeat(self,
                      index: int,
-                     offset: InfoSize | str | None = None) -> "FieldDef":
+                     offset: InfoSize | str | None = None,
+                     size: InfoSize | str | None = None) -> "FieldDef":
         """Create a single repeated-field definition for the given index."""
-        return FieldDef(name=f"{self.name}[{index}]",
-                        offset=self.offset if offset is None else offset,
-                        size=self.size,
-                        type=self.type,
+        split_name = f"{self.name}[{index}]"
+        split_offset_source = self.offset if offset is None else offset
+        split_size_source = self.size if size is None else size
+        split_offset = self._replace_name_in_expression(split_offset_source,
+                                                        self.name, split_name)
+        split_size = self._replace_name_in_expression(split_size_source,
+                                                      self.name, split_name)
+        split_type = self._replace_name_in_expression(self.type, self.name,
+                                                      split_name)
+        split_range_expression = self._replace_name_in_expression(
+            self.range_expression, self.name, split_name)
+
+        return FieldDef(name=split_name,
+                        offset=split_offset,
+                        size=split_size,
+                        type=split_type,
                         scale=self.scale,
                         repeat=None,
-                        description=self.description)
+                        description=self.description,
+                        range_expression=split_range_expression,
+                        enum_type=self.enum_type)
+
+    @staticmethod
+    def _replace_name_in_expression(value: Any, old_name: str,
+                                    new_name: str) -> Any:
+        """Replace standalone old_name tokens in expression-like strings."""
+        if not isinstance(value, str):
+            return value
+        pattern = (rf"(?<![0-9A-Za-z_]){re.escape(old_name)}"
+                   rf"(?![0-9A-Za-z_])")
+        return re.sub(pattern, lambda _: new_name, value)
 
     def __lt__(self, other: object) -> bool:
         """Compare field definitions using a stable serialized sort key."""
@@ -54,6 +86,8 @@ class FieldDef:
             "scale": self.scale,
             "repeat": self.repeat,
             "description": self.description,
+            "range_expression": self.range_expression,
+            "enum_type": self._serialize_enum_type(self.enum_type),
         }
 
     def to_json(self) -> str:
@@ -71,6 +105,8 @@ class FieldDef:
             scale=data.get("scale", 1.0),
             repeat=data.get("repeat"),
             description=data.get("description"),
+            range_expression=data.get("range_expression"),
+            enum_type=cls._deserialize_enum_type(data.get("enum_type")),
         )
 
     @classmethod
@@ -124,6 +160,37 @@ class FieldDef:
             return StructDef.from_dict(value)
         return value
 
+    @staticmethod
+    def _serialize_enum_type(value: type[Enum] | None) -> Any:
+        if value is None:
+            return None
+        return {
+            "__type__": "EnumType",
+            "module": value.__module__,
+            "qualname": value.__qualname__,
+        }
+
+    @classmethod
+    def _deserialize_enum_type(cls, value: Any) -> type[Enum] | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict) or value.get("__type__") != "EnumType":
+            return None
+        module_name = value.get("module")
+        qualname = value.get("qualname")
+        if not isinstance(module_name, str) or not isinstance(qualname, str):
+            return None
+        try:
+            module = importlib.import_module(module_name)
+            enum_type: Any = module
+            for attr in qualname.split("."):
+                enum_type = getattr(enum_type, attr)
+            if isinstance(enum_type, type) and issubclass(enum_type, Enum):
+                return enum_type
+        except (ImportError, AttributeError, TypeError):
+            return None
+        return None
+
     def _sort_key(self) -> tuple[Any, ...]:
         """Build a stable comparison key for ordering field definitions."""
         return (
@@ -134,6 +201,8 @@ class FieldDef:
             self.scale,
             -1 if self.repeat is None else self.repeat,
             "" if self.description is None else self.description,
+            "" if self.range_expression is None else self.range_expression,
+            self._sortable_enum_type(self.enum_type),
         )
 
     @staticmethod
@@ -149,6 +218,13 @@ class FieldDef:
         if isinstance(value, StructDef):
             return (0, json.dumps(value.to_dict(), sort_keys=True))
         return (1, value)
+
+    @staticmethod
+    def _sortable_enum_type(value: type[Enum] | None) -> str:
+        """Build a comparable key for enum type metadata."""
+        if value is None:
+            return ""
+        return f"{value.__module__}.{value.__qualname__}"
 
 
 @dataclass(frozen=True)

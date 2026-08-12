@@ -8,6 +8,17 @@ sltcodec is a small package for decoding and encoding bytearrays according to st
 pip install sltcodec
 ```
 
+## Primitive Type Set
+
+`PRIMITIVE_TYPES` is the public set of built-in field types understood by the codec.
+
+```python
+from sltcodec import PRIMITIVE_TYPES
+
+print(PRIMITIVE_TYPES)
+# {'bool', 'signed int', 'int', 'unsigned int', 'float', 'bytearray', 'bytes'}
+```
+
 ## Quick Example
 
 `FieldDef.description` is an optional human-readable note that can be attached to each field definition.

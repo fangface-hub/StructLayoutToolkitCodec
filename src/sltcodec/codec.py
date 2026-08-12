@@ -10,7 +10,7 @@ from sltcore import Info, InfoSize, bits_get, bits_set
 
 from .types import EnumDef, FieldDef, FieldInstance, StructDef, StructInstance
 
-_PRIMITIVE_TYPES = {
+PRIMITIVE_TYPES = {
     "bool",
     "signed int",
     "int",
@@ -19,6 +19,9 @@ _PRIMITIVE_TYPES = {
     "bytearray",
     "bytes",
 }
+
+# Backward-compatible alias for internal usage.
+_PRIMITIVE_TYPES = PRIMITIVE_TYPES
 
 _DEFAULT_PADDING_ALIGNMENT_BITS = 32
 

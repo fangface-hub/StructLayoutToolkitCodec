@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from sltcore import InfoSize
 
-from sltcodec import (EnumDef, FieldDef, FieldInstance, StructDef,
-                      StructInstance, decode, encode, load_struct_def_dict,
-                      save_struct_def_dict)
+from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
+                      StructDef, StructInstance, decode, encode,
+                      load_struct_def_dict, save_struct_def_dict)
 from sltcodec.codec import decode_field
 
 
@@ -15,6 +15,19 @@ class ValueKind(Enum):
     """Enum used for EnumDef metadata tests."""
     A = 1
     B = 2
+
+
+def test_primitive_types_are_exposed_at_package_root():
+    """Test that primitive types are exposed for external consumers."""
+    assert PRIMITIVE_TYPES == {
+        "bool",
+        "signed int",
+        "int",
+        "unsigned int",
+        "float",
+        "bytearray",
+        "bytes",
+    }
 
 
 def test_encode_and_decode_round_trip():

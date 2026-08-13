@@ -261,6 +261,77 @@ def test_field_def_to_json_from_json_round_trip():
     }
 
 
+def test_field_def_byte_swap_json_round_trip():
+    """Test that expression-based byte_swap metadata is preserved."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(2, 0),
+                         type="unsigned int",
+                         byte_swap="kind == 1")
+
+    restored = FieldDef.from_json(field_def.to_json())
+
+    assert restored == field_def
+    assert restored.byte_swap == "kind == 1"
+
+
+def test_byte_swap_reverses_bytearray_input_and_output():
+    """Test byte_swap reverses bytearray values symmetrically."""
+    field_def = FieldDef(name="payload",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(3, 0),
+                         type="bytearray",
+                         byte_swap=True)
+
+    encoded = encode(
+        StructInstance(struct_def=StructDef(fields=[field_def]),
+                       field_instances=[
+                           FieldInstance(field_def, bytearray(b"\x01\x02\x03"))
+                       ]),
+        bytearray(),
+    )
+    decoded = decode([field_def], encoded)
+
+    assert encoded == bytearray(b"\x03\x02\x01")
+    assert decoded.field_instances == [
+        FieldInstance(field_def, bytearray(b"\x01\x02\x03"))
+    ]
+
+
+def test_byte_swap_expression_uses_previous_field_value():
+    """Test byte_swap expressions use values decoded or encoded before it."""
+    kind_field = FieldDef(name="kind",
+                          offset=InfoSize(0, 0),
+                          size=InfoSize(1, 0),
+                          type="unsigned int")
+    value_field = FieldDef(name="value",
+                           offset=InfoSize(1, 0),
+                           size=InfoSize(2, 0),
+                           type="unsigned int",
+                           byte_swap="kind == 1")
+
+    encoded = encode(
+        StructInstance(struct_def=StructDef(fields=[kind_field, value_field]),
+                       field_instances=[
+                           FieldInstance(kind_field, 1),
+                           FieldInstance(value_field, 0x1234),
+                       ]),
+        bytearray(),
+    )
+    decoded = decode([kind_field, value_field], encoded)
+
+    assert encoded == bytearray(b"\x01\x34\x12")
+    assert decoded.field_instances == [
+        FieldInstance(kind_field, 1),
+        FieldInstance(
+            FieldDef(name="value",
+                     offset=InfoSize(1, 0),
+                     size=InfoSize(2, 0),
+                     type="unsigned int",
+                     byte_swap=True), 0x1234),
+    ]
+
+
 def test_enum_def_to_json_from_json_round_trip():
     """Test EnumDef.to_json/from_json round-trip conversion."""
     enum_def = EnumDef(name="Status",

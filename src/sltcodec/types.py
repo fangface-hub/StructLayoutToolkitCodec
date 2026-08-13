@@ -106,6 +106,9 @@ class FieldDef:
         default=None, metadata={"desc": "The value range expression"})
     enum_def: EnumDef | None = field(
         default=None, metadata={"desc": "The enum definition for the field"})
+    byte_swap: bool | str = field(
+        default=False,
+        metadata={"desc": "Whether to reverse the field byte order"})
 
     def split_repeat(self,
                      index: int,
@@ -123,6 +126,8 @@ class FieldDef:
                                                       split_name)
         split_range_expression = self._replace_name_in_expression(
             self.range_expression, self.name, split_name)
+        split_byte_swap = self._replace_name_in_expression(
+            self.byte_swap, self.name, split_name)
 
         return FieldDef(name=split_name,
                         offset=split_offset,
@@ -132,7 +137,8 @@ class FieldDef:
                         repeat=None,
                         description=self.description,
                         range_expression=split_range_expression,
-                        enum_def=self.enum_def)
+                        enum_def=self.enum_def,
+                        byte_swap=split_byte_swap)
 
     @staticmethod
     def _replace_name_in_expression(value: Any, old_name: str,
@@ -180,6 +186,8 @@ class FieldDef:
             self.range_expression,
             "enum_def":
             None if self.enum_def is None else self.enum_def.serialize(),
+            "byte_swap":
+            self.byte_swap,
         }
 
     def to_json(self) -> str:
@@ -198,6 +206,7 @@ class FieldDef:
         description = data.get("description")
         range_expression = data.get("range_expression")
         enum_def_data = data.get("enum_def")
+        byte_swap = data.get("byte_swap", False)
 
         def _deserialize_info_like(value: Any) -> Any:
             if isinstance(value, dict):
@@ -251,6 +260,7 @@ class FieldDef:
             description=description,
             range_expression=range_expression,
             enum_def=enum_def,
+            byte_swap=byte_swap,
         )
 
     @classmethod
@@ -270,6 +280,7 @@ class FieldDef:
             "" if self.description is None else self.description,
             "" if self.range_expression is None else self.range_expression,
             self._sortable_enum_type(self.enum_def),
+            self._sortable_byte_swap(self.byte_swap),
         )
 
     @staticmethod
@@ -298,6 +309,13 @@ class FieldDef:
                 "values": value.values,
             },
             sort_keys=True)
+
+    @staticmethod
+    def _sortable_byte_swap(value: bool | str) -> tuple[int, str]:
+        """Build a comparable key for a byte-swap flag or expression."""
+        if isinstance(value, bool):
+            return 0, str(value)
+        return 1, value
 
 
 @total_ordering

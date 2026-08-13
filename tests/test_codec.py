@@ -7,7 +7,8 @@ from sltcore import InfoSize
 
 from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
                       StructDef, StructInstance, decode, encode,
-                      load_struct_def_dict, save_struct_def_dict)
+                      load_enum_def_dict, load_struct_def_dict,
+                      save_enum_def_dict, save_struct_def_dict)
 from sltcodec.codec import decode_field
 
 
@@ -411,6 +412,22 @@ def test_struct_def_dict_load_and_save(tmp_path: Path):
     loaded = load_struct_def_dict(path)
 
     assert loaded["value"] == struct_def
+
+
+def test_enum_def_dict_load_and_save(tmp_path: Path):
+    """Test that an EnumDef dictionary can be saved and reloaded."""
+    enum_def = EnumDef(name="Status",
+                       description="Status enum",
+                       values={
+                           "OK": 1,
+                           "NG": 2
+                       })
+    path = tmp_path / "enum_defs.json"
+
+    save_enum_def_dict(path, {"status": enum_def})
+    loaded = load_enum_def_dict(path)
+
+    assert loaded["status"] == enum_def
 
 
 def test_struct_def_to_json_from_json_round_trip():

@@ -66,6 +66,26 @@ def load_struct_def_dict(path: str | Path) -> dict[str, StructDef]:
     }
 
 
+def save_enum_def_dict(path: str | Path, enum_def_dict: dict[str,
+                                                             EnumDef]) -> None:
+    """Save an enum definition dictionary to a JSON file."""
+    payload = {
+        name: enum_def.to_dict()
+        for name, enum_def in enum_def_dict.items()
+    }
+    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+
+
+def load_enum_def_dict(path: str | Path) -> dict[str, EnumDef]:
+    """Load an enum definition dictionary from a JSON file."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {
+        name: EnumDef.from_dict(enum_def_data)
+        for name, enum_def_data in data.items()
+    }
+
+
 def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
     """Resolve an InfoSize value that can be static or expression-based."""
     if isinstance(value, str):

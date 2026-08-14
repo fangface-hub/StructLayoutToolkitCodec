@@ -8,7 +8,8 @@ from typing import Any
 from sltcalc import SltEval
 from sltcore import Info, InfoSize, bits_get, bits_set
 
-from .types import EnumDef, FieldDef, FieldInstance, StructDef, StructInstance
+from .types import (EnumDef, FieldDef, FieldInstance, StructDef, StructInstance,
+                    TypeDict)
 
 PRIMITIVE_TYPES = {
     "bool",
@@ -46,44 +47,78 @@ def _validate_struct_instance(struct_instance: StructInstance) -> None:
                 f"{type(field_instance).__name__}")
 
 
-def save_struct_def_dict(path: str | Path,
-                         struct_def_dict: dict[str, StructDef]) -> None:
-    """Save a structure definition dictionary to a JSON file."""
+def save_type_dict(path: str | Path, type_dict: TypeDict) -> None:
+    """Save TypeDict to a JSON file."""
     payload = {
-        name: struct_def.to_dict()
-        for name, struct_def in struct_def_dict.items()
+        "struct_dict": {
+            name: struct_def.to_dict()
+            for name, struct_def in type_dict.struct_dict.items()
+        },
+        "enum_dict": {
+            name: enum_def.to_dict()
+            for name, enum_def in type_dict.enum_dict.items()
+        },
     }
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                           encoding="utf-8")
 
 
+def load_type_dict(path: str | Path) -> TypeDict:
+    """Load TypeDict from a JSON file."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+
+    struct_payload = data.get("struct_dict")
+    enum_payload = data.get("enum_dict")
+
+    if isinstance(struct_payload, dict) and isinstance(enum_payload, dict):
+        return TypeDict(
+            struct_dict={
+                name: StructDef.from_dict(struct_def_data)
+                for name, struct_def_data in struct_payload.items()
+            },
+            enum_dict={
+                name: EnumDef.from_dict(enum_def_data)
+                for name, enum_def_data in enum_payload.items()
+            },
+        )
+
+    # Backward compatibility: old files that stored only struct or enum maps.
+    legacy_entries: dict[str, Any] = data if isinstance(data, dict) else {}
+    if any(
+            isinstance(item, dict) and "fields" in item
+            for item in legacy_entries.values()):
+        return TypeDict(
+            struct_dict={
+                name: StructDef.from_dict(struct_def_data)
+                for name, struct_def_data in legacy_entries.items()
+            })
+    return TypeDict(
+        enum_dict={
+            name: EnumDef.from_dict(enum_def_data)
+            for name, enum_def_data in legacy_entries.items()
+        })
+
+
+def save_struct_def_dict(path: str | Path,
+                         struct_def_dict: dict[str, StructDef]) -> None:
+    """Save a structure definition dictionary to a JSON file."""
+    save_type_dict(path, TypeDict(struct_dict=struct_def_dict))
+
+
 def load_struct_def_dict(path: str | Path) -> dict[str, StructDef]:
     """Load a structure definition dictionary from a JSON file."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return {
-        name: StructDef.from_dict(field_def_data)
-        for name, field_def_data in data.items()
-    }
+    return load_type_dict(path).struct_dict.items_dict()
 
 
 def save_enum_def_dict(path: str | Path, enum_def_dict: dict[str,
                                                              EnumDef]) -> None:
     """Save an enum definition dictionary to a JSON file."""
-    payload = {
-        name: enum_def.to_dict()
-        for name, enum_def in enum_def_dict.items()
-    }
-    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                          encoding="utf-8")
+    save_type_dict(path, TypeDict(enum_dict=enum_def_dict))
 
 
 def load_enum_def_dict(path: str | Path) -> dict[str, EnumDef]:
     """Load an enum definition dictionary from a JSON file."""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return {
-        name: EnumDef.from_dict(enum_def_data)
-        for name, enum_def_data in data.items()
-    }
+    return load_type_dict(path).enum_dict.items_dict()
 
 
 def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
@@ -144,7 +179,7 @@ def _validate_padding_alignment_bits(padding_alignment_bits: int) -> None:
 
 
 def _resolve_field_type(field_type: str | StructDef,
-                        struct_def_dict: dict[str, StructDef] | None = None,
+                        type_dict: TypeDict | None = None,
                         env: dict[str, Any] | None = None) -> str | StructDef:
     """Resolve a field type that can be primitive, named, or nested."""
     if isinstance(field_type, StructDef):
@@ -152,7 +187,7 @@ def _resolve_field_type(field_type: str | StructDef,
     if field_type in _PRIMITIVE_TYPES:
         return field_type
 
-    resolved_struct_def = _get_struct_def(field_type, struct_def_dict, env)
+    resolved_struct_def = _get_struct_def(field_type, type_dict, env)
     if isinstance(resolved_struct_def, StructDef):
         return resolved_struct_def
     if (isinstance(resolved_struct_def, str)
@@ -188,8 +223,7 @@ def _prepare_field_info(
     field_def: FieldDef,
     value: Any,
     env: dict[str, Any],
-    struct_def_dict: dict[str, StructDef] | None = None,
-    enum_def_dict: dict[str, EnumDef] | None = None,
+    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> tuple[InfoSize, InfoSize, Info] | None:
     """Resolve a field definition into an offset, size, and info payload."""
@@ -198,7 +232,7 @@ def _prepare_field_info(
     if size.byte == 0 and size.bit == 0:
         return None
 
-    resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
+    resolved_type = _resolve_field_type(field_def.type, type_dict, env)
     if isinstance(resolved_type, StructDef):
         if not isinstance(value, StructInstance):
             raise TypeError(
@@ -206,8 +240,7 @@ def _prepare_field_info(
                 "values")
         nested_bytes = encode(value,
                               bytearray(),
-                              struct_def_dict,
-                              enum_def_dict,
+                              type_dict,
                               padding_alignment_bits=padding_alignment_bits)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
@@ -233,16 +266,15 @@ def encode_field(
     value: Any,
     buf: bytearray,
     env: dict[str, Any] | None = None,
-    struct_def_dict: dict[str, StructDef] | None = None,
-    enum_def_dict: dict[str, EnumDef] | None = None,
+    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> None:
     """Encode a single field into a bytearray."""
     if env is None:
         env = {}
 
-    prepared = _prepare_field_info(field_def, value, env, struct_def_dict,
-                                   enum_def_dict, padding_alignment_bits)
+    prepared = _prepare_field_info(field_def, value, env, type_dict,
+                                   padding_alignment_bits)
     if prepared is None:
         return
 
@@ -259,8 +291,7 @@ def encode_field(
 def encode(
     struct_instance: StructInstance,
     buf: bytearray,
-    struct_def_dict: dict[str, StructDef] | None = None,
-    enum_def_dict: dict[str, EnumDef] | None = None,
+    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> bytearray:
     """Encode decode() result into a bytearray.
@@ -271,10 +302,9 @@ def encode(
         The structure instance to encode.
     buf : bytearray
         The base bytearray instance to write into.
-    struct_def_dict : dict[str, StructDef] | None, optional
-        A dictionary of structure definitions, by default None.
-    enum_def_dict : dict[str, EnumDef] | None, optional
-        A dictionary of enum definitions, by default None.
+    type_dict : TypeDict | None, optional
+        Type dictionaries including structure and enum definitions,
+        by default None.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
 
@@ -304,8 +334,7 @@ def encode(
             for i in range(field_def.repeat):
                 field_def_repeat = _split_repeated_field(
                     field_def, i, env, current_offset)
-                encode_field(field_def_repeat, values[i], buf, env,
-                             struct_def_dict, enum_def_dict,
+                encode_field(field_def_repeat, values[i], buf, env, type_dict,
                              padding_alignment_bits)
                 env[field_def_repeat.name] = values[i]
                 if isinstance(current_offset, InfoSize) and isinstance(
@@ -313,7 +342,7 @@ def encode(
                     current_offset += resolved_size
             continue
 
-        encode_field(field_def, value, buf, env, struct_def_dict, enum_def_dict,
+        encode_field(field_def, value, buf, env, type_dict,
                      padding_alignment_bits)
         env[field_def.name] = value
 
@@ -327,8 +356,7 @@ def decode_field(
     field_def: FieldDef,
     data: bytearray | bytes,
     env: dict[str, Any] | None = None,
-    struct_def_dict: dict[str, StructDef] | None = None,
-    enum_def_dict: dict[str, EnumDef] | None = None,
+    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> FieldInstance | None:
     """Decode a single field from a bytearray according to a field definition.
@@ -341,8 +369,9 @@ def decode_field(
         The data to decode.
     env : dict[str, Any] | None, optional
         The environment for evaluating expressions, by default None.
-    struct_def_dict : dict[str, StructDef] | None, optional
-        A dictionary of structure definitions, by default None.
+    type_dict : TypeDict | None, optional
+        Type dictionaries including structure and enum definitions,
+        by default None.
     Returns
     -------
     FieldInstance | None
@@ -358,7 +387,7 @@ def decode_field(
     byte_swap = _resolve_byte_swap(field_def, env)
     if byte_swap:
         info = _byte_swap_info(info, size)
-    resolved_type = _resolve_field_type(field_def.type, struct_def_dict, env)
+    resolved_type = _resolve_field_type(field_def.type, type_dict, env)
     resolved_field_def = FieldDef(
         name=field_def.name,
         offset=offset,
@@ -374,40 +403,38 @@ def decode_field(
     if isinstance(resolved_type, StructDef):
         return FieldInstance(
             field_def=resolved_field_def,
-            value=decode(resolved_type, bytearray(info.to_bytes),
-                         struct_def_dict, enum_def_dict,
+            value=decode(resolved_type, bytearray(info.to_bytes), type_dict,
                          padding_alignment_bits),
         )
     if resolved_type == "bool":
         return FieldInstance.from_value(resolved_field_def,
                                         info.to_bool,
-                                        enum_def_dict=enum_def_dict)
+                                        type_dict=type_dict)
     if resolved_type == "signed int":
         return FieldInstance.from_value(resolved_field_def,
                                         info.to_signed_int,
-                                        enum_def_dict=enum_def_dict)
+                                        type_dict=type_dict)
     if resolved_type in ["int", "unsigned int"]:
         return FieldInstance.from_value(resolved_field_def,
                                         info.to_unsigned_int,
-                                        enum_def_dict=enum_def_dict)
+                                        type_dict=type_dict)
     if resolved_type == "float":
         return FieldInstance.from_value(resolved_field_def,
                                         info.to_float,
-                                        enum_def_dict=enum_def_dict)
+                                        type_dict=type_dict)
     if resolved_type in ["bytearray", "bytes"]:
         return FieldInstance.from_value(resolved_field_def,
                                         info.to_bytes,
-                                        enum_def_dict=enum_def_dict)
+                                        type_dict=type_dict)
     return FieldInstance.from_value(resolved_field_def,
                                     info.raw_value,
-                                    enum_def_dict=enum_def_dict)
+                                    type_dict=type_dict)
 
 
 def decode(
     struct_def: StructDef | list[FieldDef],
     data: bytearray | bytes,
-    struct_def_dict: dict[str, StructDef] | None = None,
-    enum_def_dict: dict[str, EnumDef] | None = None,
+    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> StructInstance:
     """Decode a bytearray into field values according to a layout.
@@ -418,10 +445,9 @@ def decode(
         The definitions of the fields to decode.
     data : bytearray | bytes
         The data to decode.
-    struct_def_dict : dict[str, StructDef] | None, optional
-        A dictionary of structure definitions, by default None.
-    enum_def_dict : dict[str, EnumDef] | None, optional
-        A dictionary of enum definitions, by default None.
+    type_dict : TypeDict | None, optional
+        Type dictionaries including structure and enum definitions,
+        by default None.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
     Returns
@@ -471,8 +497,8 @@ def decode(
         if field_def.repeat is None or field_def.repeat <= 1:
             resolved_offset = _resolve_offset(field_def, env)
             append_padding_until(resolved_offset)
-            field_instance = decode_field(field_def, data, env, struct_def_dict,
-                                          enum_def_dict, padding_alignment_bits)
+            field_instance = decode_field(field_def, data, env, type_dict,
+                                          padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
@@ -487,8 +513,7 @@ def decode(
             field_def_repeat = _split_repeated_field(field_def, i, env,
                                                      current_offset)
             field_instance = decode_field(field_def_repeat, data, env,
-                                          struct_def_dict, enum_def_dict,
-                                          padding_alignment_bits)
+                                          type_dict, padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
@@ -501,17 +526,19 @@ def decode(
 
 
 def _get_struct_def(
-        struct_def_name: str,
-        struct_def_dict: dict[str, StructDef] | None = None,
-        env: dict[str, Any] | None = None) -> StructDef | str | None:
+    struct_def_name: str,
+    type_dict: TypeDict | None = None,
+    env: dict[str, Any] | None = None,
+) -> StructDef | str | None:
     """Get a structure definition from a dictionary or evaluate it.
 
     Parameters
     ----------
     struct_def_name : str
         The name of the structure definition to get.
-    struct_def_dict : dict[str, StructDef] | None, optional
-        A dictionary of structure definitions, by default None.
+    type_dict : TypeDict | None, optional
+        Type dictionaries including structure and enum definitions,
+        by default None.
     env : dict[str, Any] | None, optional
         The environment for evaluating the structure definition,
         by default None.
@@ -521,8 +548,10 @@ def _get_struct_def(
     StructDef | str | None
         The structure definition, primitive type, or None if not found.
     """
-    if struct_def_dict and struct_def_name in struct_def_dict:
-        return struct_def_dict[struct_def_name]
+    struct_dict = None if type_dict is None else type_dict.struct_dict
+
+    if struct_dict and struct_def_name in struct_dict:
+        return struct_dict[struct_def_name]
 
     stleval = SltEval(env)
     try:
@@ -532,7 +561,7 @@ def _get_struct_def(
 
     if isinstance(eval_result, str) and eval_result in _PRIMITIVE_TYPES:
         return eval_result
-    if (isinstance(eval_result, str) and struct_def_dict
-            and eval_result in struct_def_dict):
-        return struct_def_dict[eval_result]
+    if (isinstance(eval_result, str) and struct_dict
+            and eval_result in struct_dict):
+        return struct_dict[eval_result]
     return None

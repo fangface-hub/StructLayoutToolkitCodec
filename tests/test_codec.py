@@ -7,9 +7,8 @@ import pytest
 from sltcore import InfoSize
 
 from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
-                      StructDef, StructInstance, decode, encode,
-                      load_enum_def_dict, load_struct_def_dict,
-                      save_enum_def_dict, save_struct_def_dict)
+                      StructDef, StructInstance, TypeDict, decode, encode,
+                      load_type_dict, save_type_dict)
 from sltcodec.codec import decode_field
 
 
@@ -402,10 +401,9 @@ def test_decode_uses_enum_def_dict_to_set_enum_item():
                          offset=InfoSize(0, 0),
                          size=InfoSize(1, 0),
                          type="unsigned int")
+    type_dict = TypeDict(enum_dict={"status": enum_def})
 
-    decoded = decode([field_def],
-                     bytearray(b"\x02"),
-                     enum_def_dict={"status": enum_def})
+    decoded = decode([field_def], bytearray(b"\x02"), type_dict=type_dict)
 
     assert decoded.field_instances[0].value == 2
     assert decoded.field_instances[0].enum_item == ("NG", 2)
@@ -421,7 +419,7 @@ def test_field_instance_from_value_sets_enum_item_from_field_enum_def():
                          enum_def_name=enum_def.name)
 
     field_instance = FieldInstance.from_value(
-        field_def, 1, enum_def_dict={enum_def.name: enum_def})
+        field_def, 1, type_dict=TypeDict(enum_dict={enum_def.name: enum_def}))
 
     assert field_instance.enum_item == ("MANUAL", 1)
 
@@ -460,8 +458,8 @@ def test_struct_instance_size_json_round_trip():
     assert struct_instance.size == InfoSize(8, 0)
 
 
-def test_struct_def_dict_load_and_save(tmp_path: Path):
-    """Test that a StructDef dictionary can be saved and reloaded."""
+def test_type_dict_load_and_save_struct_dict(tmp_path: Path):
+    """Test TypeDict save/load for struct definitions."""
     struct_def = StructDef(name="ValueStruct",
                            description="Single value struct",
                            fields=[
@@ -473,18 +471,19 @@ def test_struct_def_dict_load_and_save(tmp_path: Path):
                            ])
     path = tmp_path / "field_defs.json"
 
-    save_struct_def_dict(path, {"value": struct_def})
-    saved_field = json.loads(path.read_text())["value"]["fields"][0]
+    save_type_dict(path, TypeDict(struct_dict={"value": struct_def}))
+    saved_field = json.loads(
+        path.read_text())["struct_dict"]["value"]["fields"][0]
 
     assert isinstance(saved_field["offset"], dict)
     assert isinstance(saved_field["size"], dict)
-    loaded = load_struct_def_dict(path)
+    loaded = load_type_dict(path)
 
-    assert loaded["value"] == struct_def
+    assert loaded.struct_dict["value"] == struct_def
 
 
-def test_enum_def_dict_load_and_save(tmp_path: Path):
-    """Test that an EnumDef dictionary can be saved and reloaded."""
+def test_type_dict_load_and_save_enum_dict(tmp_path: Path):
+    """Test TypeDict save/load for enum definitions."""
     enum_def = EnumDef(name="Status",
                        description="Status enum",
                        values={
@@ -493,10 +492,10 @@ def test_enum_def_dict_load_and_save(tmp_path: Path):
                        })
     path = tmp_path / "enum_defs.json"
 
-    save_enum_def_dict(path, {"status": enum_def})
-    loaded = load_enum_def_dict(path)
+    save_type_dict(path, TypeDict(enum_dict={"status": enum_def}))
+    loaded = load_type_dict(path)
 
-    assert loaded["status"] == enum_def
+    assert loaded.enum_dict["status"] == enum_def
 
 
 def test_struct_def_to_json_from_json_round_trip():

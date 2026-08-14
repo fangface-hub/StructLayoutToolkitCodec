@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from functools import total_ordering
-from typing import Any
+from typing import Any, Dict, Iterator, Optional
 
 from sltcalc import SltEval
 from sltcore import Info, InfoSize
@@ -336,10 +337,10 @@ class FieldInstance:
     def from_value(cls,
                    field_def: FieldDef,
                    value: Any,
-                   enum_def_dict: dict[str, EnumDef] | None = None,
+                   type_dict: "TypeDict | None" = None,
                    is_padding: bool = False) -> "FieldInstance":
         """Create a FieldInstance and attach a matched enum item if any."""
-        enum_def = cls._resolve_enum_def(field_def, enum_def_dict)
+        enum_def = cls._resolve_enum_def(field_def, type_dict)
         enum_item = cls._resolve_enum_item(enum_def, value)
         return cls(field_def=field_def,
                    value=value,
@@ -347,17 +348,19 @@ class FieldInstance:
                    is_padding=is_padding)
 
     @staticmethod
-    def _resolve_enum_def(
-            field_def: FieldDef,
-            enum_def_dict: dict[str, EnumDef] | None) -> EnumDef | None:
+    def _resolve_enum_def(field_def: FieldDef,
+                          type_dict: "TypeDict | None") -> EnumDef | None:
         """Resolve enum definition from field metadata or lookup dictionary."""
-        if not enum_def_dict:
+        if type_dict is None:
+            return None
+        enum_dict = type_dict.enum_dict
+        if len(enum_dict) == 0:
             return None
         if field_def.enum_def_name is not None:
-            return enum_def_dict.get(field_def.enum_def_name)
-        if isinstance(field_def.type, str) and field_def.type in enum_def_dict:
-            return enum_def_dict[field_def.type]
-        return enum_def_dict.get(field_def.name)
+            return enum_dict.get(field_def.enum_def_name)
+        if isinstance(field_def.type, str) and field_def.type in enum_dict:
+            return enum_dict[field_def.type]
+        return enum_dict.get(field_def.name)
 
     @staticmethod
     def _resolve_enum_item(enum_def: EnumDef | None,
@@ -596,3 +599,82 @@ class StructInstance:
 
         if max_end_offset > self.size:
             self.size = max_end_offset
+
+
+@dataclass
+class EnumDict(MutableMapping):
+    """A dictionary-like container for EnumDef objects."""
+    _items: Dict[str, "EnumDef"]
+
+    def __init__(self, items: Optional[Dict[str, "EnumDef"]] = None):
+        self._items = items or {}
+
+    def __getitem__(self, key: str) -> "EnumDef":
+        return self._items[key]
+
+    def __setitem__(self, key: str, value: "EnumDef"):
+        self._items[key] = value
+
+    def __delitem__(self, key: str):
+        del self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def items_dict(self) -> Dict[str, "EnumDef"]:
+        """Return the underlying dictionary of EnumDef objects.
+           Returns:
+               Dict[str, EnumDef]: The underlying dictionary
+               of EnumDef objects."""
+        return self._items
+
+
+@dataclass
+class StructDict(MutableMapping):
+    """A dictionary-like container for StructDef objects. """
+    _items: Dict[str, "StructDef"]
+
+    def __init__(self, items: Optional[Dict[str, "StructDef"]] = None):
+        self._items = items or {}
+
+    def __getitem__(self, key: str) -> "StructDef":
+        return self._items[key]
+
+    def __setitem__(self, key: str, value: "StructDef"):
+        self._items[key] = value
+
+    def __delitem__(self, key: str):
+        del self._items[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def items_dict(self) -> Dict[str, "StructDef"]:
+        """Return the underlying dictionary of StructDef objects.
+           Returns:
+               Dict[str, StructDef]: The underlying dictionary
+               of StructDef objects."""
+        return self._items
+
+
+@dataclass
+class TypeDict:
+    """A dictionary-like container for EnumDef and StructDef objects."""
+    enum_dict: EnumDict
+    struct_dict: StructDict
+
+    def __init__(
+        self,
+        enum_dict: Optional[Dict[str, "EnumDef"]] = None,
+        struct_dict: Optional[Dict[str, "StructDef"]] = None,
+    ):
+        """Initialize TypeDict with optional EnumDef
+           and StructDef dictionaries."""
+        self.enum_dict = EnumDict(enum_dict)
+        self.struct_dict = StructDict(struct_dict)

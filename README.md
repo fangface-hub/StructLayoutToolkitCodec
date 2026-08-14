@@ -182,10 +182,10 @@ print(encoded_int, decoded_int)
 print(encoded_float, decoded_float)
 ```
 
-## Saving And Loading StructDef Dictionaries
+## Saving And Loading Type Dictionaries
 
-You can persist reusable structure definitions by name with
-`save_struct_def_dict` / `load_struct_def_dict`.
+You can persist reusable structure and enum definitions together via
+`TypeDict` with `save_type_dict` / `load_type_dict`.
 
 `InfoSize` values in `offset` and `size` are saved as typed dictionaries in
 JSON. Expression-based offsets and sizes remain strings and are resolved when
@@ -195,25 +195,31 @@ the definition is used.
 from pathlib import Path
 
 from sltcore import InfoSize
-from sltcodec import FieldDef, StructDef, load_struct_def_dict, save_struct_def_dict
+from sltcodec import EnumDef, FieldDef, StructDef, TypeDict, load_type_dict, save_type_dict
 
-struct_defs = {
-    "Header": StructDef(
-        name="Header",
-        description="Simple header",
-        fields=[
-            FieldDef(name="kind", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
-            FieldDef(name="flags", offset=InfoSize(1, 0), size=InfoSize(1, 0), type="unsigned int"),
-        ],
-    )
-}
+type_dict = TypeDict(
+    struct_dict={
+        "Header": StructDef(
+            name="Header",
+            description="Simple header",
+            fields=[
+                FieldDef(name="kind", offset=InfoSize(0, 0), size=InfoSize(1, 0), type="unsigned int"),
+                FieldDef(name="flags", offset=InfoSize(1, 0), size=InfoSize(1, 0), type="unsigned int"),
+            ],
+        )
+    },
+    enum_dict={
+        "Status": EnumDef(name="Status", values={"OK": 0, "NG": 1}),
+    }
+)
 
 path = Path("struct_defs.json")
-save_struct_def_dict(path, struct_defs)
-loaded = load_struct_def_dict(path)
+save_type_dict(path, type_dict)
+loaded = load_type_dict(path)
 
-print(loaded["Header"].name)
-print(loaded["Header"].description)
+print(loaded.struct_dict["Header"].name)
+print(loaded.struct_dict["Header"].description)
+print(loaded.enum_dict["Status"].values["NG"])
 ```
 
 Example output:
@@ -221,31 +227,42 @@ Example output:
 ```python
 Header
 Simple header
+1
 ```
 
 ## Enum Definitions
 
 `FieldDef.enum_def_name` holds only the name of an `EnumDef`, not the definition
-itself. Pass the actual definitions via an `enum_def_dict` (mapping name to
-`EnumDef`) to `decode` / `encode` so the matching `EnumDef` can be resolved and
-attached as `FieldInstance.enum_item`.
+itself. In practice, `TypeDict` is most useful when you pass both
+`type_dict.struct_dict` and `type_dict.enum_dict` together: one resolves named
+layout types and the other resolves enum labels. The example below uses both in
+one decode flow.
 
 ```python
 from sltcore import InfoSize
-from sltcodec import EnumDef, FieldDef, decode
+from sltcodec import EnumDef, EnumDict, FieldDef, StructDef, StructDict, TypeDict, decode
 
-status_enum = EnumDef(name="Status", values={"OK": 0, "NG": 1})
+enum_dict = EnumDict({"Status": EnumDef(name="Status", values={"OK": 0, "NG": 1})})
 
-struct_def = [
-    FieldDef(name="status",
-             offset=InfoSize(0, 0),
-             size=InfoSize(1, 0),
-             type="unsigned int",
-             enum_def_name="Status"),
-]
+packet_struct = StructDef(
+    name="Packet",
+    fields=[
+        FieldDef(name="status",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int",
+                 enum_def_name="Status"),
+    ],
+)
 
-decoded = decode(struct_def, bytearray(b"\x01"),
-                 enum_def_dict={"Status": status_enum})
+struct_dict = StructDict({"Packet": packet_struct})
+
+type_dict = TypeDict(struct_dict=struct_dict.items_dict(),
+                     enum_dict=enum_dict.items_dict())
+
+decoded = decode(type_dict.struct_dict["Packet"],
+                 bytearray(b"\x01"),
+                 type_dict=type_dict)
 
 print(decoded.field_instances[0].value)
 print(decoded.field_instances[0].enum_item)
@@ -258,8 +275,8 @@ Output:
 ('NG', 1)
 ```
 
-You can also persist enum definitions by name with
-`save_enum_def_dict` / `load_enum_def_dict`, mirroring `StructDef` dictionaries.
+You can also persist enum definitions by name through `TypeDict` using
+`save_type_dict` / `load_type_dict`.
 
 ## Development
 

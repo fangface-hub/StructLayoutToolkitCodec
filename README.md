@@ -219,6 +219,44 @@ bytearray(b"\x01\x07") StructInstance(struct_def=StructDef(...), field_instances
 bytearray(b"\x02?\xc0\x00\x00") StructInstance(struct_def=StructDef(...), field_instances=[...])
 ```
 
+## Enum Definitions
+
+`FieldDef.enum_def_name` holds only the name of an `EnumDef`, not the definition
+itself. Pass the actual definitions via an `enum_def_dict` (mapping name to
+`EnumDef`) to `decode` / `encode` so the matching `EnumDef` can be resolved and
+attached as `FieldInstance.enum_item`.
+
+```python
+from sltcore import InfoSize
+from sltcodec import EnumDef, FieldDef, decode
+
+status_enum = EnumDef(name="Status", values={"OK": 0, "NG": 1})
+
+struct_def = [
+    FieldDef(name="status",
+             offset=InfoSize(0, 0),
+             size=InfoSize(1, 0),
+             type="unsigned int",
+             enum_def_name="Status"),
+]
+
+decoded = decode(struct_def, bytearray(b"\x01"),
+                 enum_def_dict={"Status": status_enum})
+
+print(decoded.field_instances[0].value)
+print(decoded.field_instances[0].enum_item)
+```
+
+Output:
+
+```python
+1
+('NG', 1)
+```
+
+You can also persist enum definitions by name with
+`save_enum_def_dict` / `load_enum_def_dict`, mirroring `StructDef` dictionaries.
+
 ## Development
 
 ```bash

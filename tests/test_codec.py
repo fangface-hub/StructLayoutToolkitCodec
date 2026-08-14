@@ -179,7 +179,7 @@ def test_repeated_field_preserves_range_and_enum_metadata():
                          type="unsigned int",
                          repeat=2,
                          range_expression="0 <= value <= 255",
-                         enum_def=enum_def)
+                         enum_def_name=enum_def.name)
 
     encoded = encode(
         StructInstance(struct_def=StructDef(fields=[field_def]),
@@ -192,8 +192,8 @@ def test_repeated_field_preserves_range_and_enum_metadata():
         "0 <= value[0] <= 255")
     assert decoded.field_instances[1].field_def.range_expression == (
         "0 <= value[1] <= 255")
-    assert decoded.field_instances[0].field_def.enum_def == enum_def
-    assert decoded.field_instances[1].field_def.enum_def == enum_def
+    assert decoded.field_instances[0].field_def.enum_def_name == enum_def.name
+    assert decoded.field_instances[1].field_def.enum_def_name == enum_def.name
 
 
 def test_split_repeat_replaces_name_in_range_expression():
@@ -242,23 +242,15 @@ def test_field_def_to_json_from_json_round_trip():
                          repeat=3,
                          description="A repeated value",
                          range_expression="0 <= value <= 255",
-                         enum_def=enum_def)
+                         enum_def_name=enum_def.name)
 
     payload = field_def.to_json()
     restored = FieldDef.from_json(payload)
 
     assert restored == field_def
     assert restored.range_expression == "0 <= value <= 255"
-    assert restored.enum_def == enum_def
-    assert restored.to_dict()["enum_def"] == {
-        "__type__": "EnumDef",
-        "name": "ValueKind",
-        "description": None,
-        "values": {
-            member.name: member.value
-            for member in ValueKind
-        },
-    }
+    assert restored.enum_def_name == enum_def.name
+    assert restored.to_dict()["enum_def_name"] == "ValueKind"
 
 
 def test_field_def_byte_swap_json_round_trip():
@@ -425,9 +417,10 @@ def test_field_instance_from_value_sets_enum_item_from_field_enum_def():
                          offset=InfoSize(0, 0),
                          size=InfoSize(1, 0),
                          type="unsigned int",
-                         enum_def=enum_def)
+                         enum_def_name=enum_def.name)
 
-    field_instance = FieldInstance.from_value(field_def, 1)
+    field_instance = FieldInstance.from_value(
+        field_def, 1, enum_def_dict={enum_def.name: enum_def})
 
     assert field_instance.enum_item == ("MANUAL", 1)
 

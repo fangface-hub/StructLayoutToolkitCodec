@@ -104,8 +104,9 @@ class FieldDef:
         default=None, metadata={"desc": "The description of the field"})
     range_expression: str | None = field(
         default=None, metadata={"desc": "The value range expression"})
-    enum_def: EnumDef | None = field(
-        default=None, metadata={"desc": "The enum definition for the field"})
+    enum_def_name: str | None = field(
+        default=None,
+        metadata={"desc": "The name of the enum definition for the field"})
     byte_swap: bool | str = field(
         default=False,
         metadata={"desc": "Whether to reverse the field byte order"})
@@ -137,7 +138,7 @@ class FieldDef:
                         repeat=None,
                         description=self.description,
                         range_expression=split_range_expression,
-                        enum_def=self.enum_def,
+                        enum_def_name=self.enum_def_name,
                         byte_swap=split_byte_swap)
 
     @staticmethod
@@ -184,8 +185,8 @@ class FieldDef:
             self.description,
             "range_expression":
             self.range_expression,
-            "enum_def":
-            None if self.enum_def is None else self.enum_def.serialize(),
+            "enum_def_name":
+            self.enum_def_name,
             "byte_swap":
             self.byte_swap,
         }
@@ -205,7 +206,7 @@ class FieldDef:
         repeat = data.get("repeat")
         description = data.get("description")
         range_expression = data.get("range_expression")
-        enum_def_data = data.get("enum_def")
+        enum_def_name = data.get("enum_def_name")
         byte_swap = data.get("byte_swap", False)
 
         def _deserialize_info_like(value: Any) -> Any:
@@ -242,14 +243,6 @@ class FieldDef:
         else:
             type_value = type_data
 
-        if enum_def_data is None:
-            enum_def = None
-        elif (isinstance(enum_def_data, dict)
-              and enum_def_data.get("__type__") == "EnumDef"):
-            enum_def = EnumDef.deserialize(enum_def_data)
-        else:
-            enum_def = None
-
         return cls(
             name=name,
             offset=offset,
@@ -259,7 +252,7 @@ class FieldDef:
             repeat=repeat,
             description=description,
             range_expression=range_expression,
-            enum_def=enum_def,
+            enum_def_name=enum_def_name,
             byte_swap=byte_swap,
         )
 
@@ -279,7 +272,7 @@ class FieldDef:
             -1 if self.repeat is None else self.repeat,
             "" if self.description is None else self.description,
             "" if self.range_expression is None else self.range_expression,
-            self._sortable_enum_type(self.enum_def),
+            "" if self.enum_def_name is None else self.enum_def_name,
             self._sortable_byte_swap(self.byte_swap),
         )
 
@@ -296,19 +289,6 @@ class FieldDef:
         if isinstance(value, StructDef):
             return (0, json.dumps(value.to_dict(), sort_keys=True))
         return (1, value)
-
-    @staticmethod
-    def _sortable_enum_type(value: EnumDef | None) -> str:
-        """Build a comparable key for enum definition metadata."""
-        if value is None:
-            return ""
-        return json.dumps(
-            {
-                "name": value.name,
-                "description": value.description,
-                "values": value.values,
-            },
-            sort_keys=True)
 
     @staticmethod
     def _sortable_byte_swap(value: bool | str) -> tuple[int, str]:
@@ -369,10 +349,10 @@ class FieldInstance:
             field_def: FieldDef,
             enum_def_dict: dict[str, EnumDef] | None) -> EnumDef | None:
         """Resolve enum definition from field metadata or lookup dictionary."""
-        if field_def.enum_def is not None:
-            return field_def.enum_def
         if not enum_def_dict:
             return None
+        if field_def.enum_def_name is not None:
+            return enum_def_dict.get(field_def.enum_def_name)
         if isinstance(field_def.type, str) and field_def.type in enum_def_dict:
             return enum_def_dict[field_def.type]
         return enum_def_dict.get(field_def.name)

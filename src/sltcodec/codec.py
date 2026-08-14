@@ -368,7 +368,7 @@ def decode_field(
         repeat=field_def.repeat,
         description=field_def.description,
         range_expression=field_def.range_expression,
-        enum_def=field_def.enum_def,
+        enum_def_name=field_def.enum_def_name,
         byte_swap=byte_swap,
     )
     if isinstance(resolved_type, StructDef):

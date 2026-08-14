@@ -1,4 +1,5 @@
 """Tests for the sltcodec module."""
+import json
 from enum import Enum
 from pathlib import Path
 
@@ -473,6 +474,10 @@ def test_struct_def_dict_load_and_save(tmp_path: Path):
     path = tmp_path / "field_defs.json"
 
     save_struct_def_dict(path, {"value": struct_def})
+    saved_field = json.loads(path.read_text())["value"]["fields"][0]
+
+    assert isinstance(saved_field["offset"], dict)
+    assert isinstance(saved_field["size"], dict)
     loaded = load_struct_def_dict(path)
 
     assert loaded["value"] == struct_def

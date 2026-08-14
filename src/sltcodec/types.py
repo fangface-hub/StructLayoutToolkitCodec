@@ -159,17 +159,19 @@ class FieldDef:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert this field definition to a JSON-serializable dictionary."""
+
+        def _serialize_info_like(value: Any) -> Any:
+            if isinstance(value, (Info, InfoSize)):
+                return json.loads(value.to_json())
+            return value
+
         return {
             "name":
             self.name,
             "offset":
-            self.offset.serialize() if isinstance(self.offset,
-                                                  (Info,
-                                                   InfoSize)) else self.offset,
+            _serialize_info_like(self.offset),
             "size":
-            self.size.serialize() if isinstance(self.size,
-                                                (Info,
-                                                 InfoSize)) else self.size,
+            _serialize_info_like(self.size),
             "type": {
                 "__type__": "StructDef",
                 "fields": self.type.to_dict(),

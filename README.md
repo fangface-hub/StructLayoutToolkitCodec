@@ -128,7 +128,7 @@ Output:
 ```python
 bytearray(b"\x03\x04")
 StructInstance(struct_def=StructDef(...), field_instances=[...])
-[FieldInstance(field_def=FieldDef(name='pair', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=2, bit=0), type=[...], scale=1.0, repeat=None),
+[FieldInstance(field_def=FieldDef(name='pair', offset=InfoSize(byte=0, bit=0), size=InfoSize(byte=2, bit=0), type=StructDef(...), scale=1.0, repeat=None),
                value=StructInstance(struct_def=StructDef(...), field_instances=[...]))]
 ```
 
@@ -187,6 +187,10 @@ print(encoded_float, decoded_float)
 You can persist reusable structure definitions by name with
 `save_struct_def_dict` / `load_struct_def_dict`.
 
+`InfoSize` values in `offset` and `size` are saved as typed dictionaries in
+JSON. Expression-based offsets and sizes remain strings and are resolved when
+the definition is used.
+
 ```python
 from pathlib import Path
 
@@ -215,8 +219,8 @@ print(loaded["Header"].description)
 Example output:
 
 ```python
-bytearray(b"\x01\x07") StructInstance(struct_def=StructDef(...), field_instances=[...])
-bytearray(b"\x02?\xc0\x00\x00") StructInstance(struct_def=StructDef(...), field_instances=[...])
+Header
+Simple header
 ```
 
 ## Enum Definitions

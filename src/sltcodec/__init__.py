@@ -1,7 +1,7 @@
-from .codec import (PRIMITIVE_TYPES, decode, encode, encode_field,
-                    load_type_dict, save_type_dict)
+from .codec import (PRIMITIVE_TYPES, decode, encode, load_struct_layout,
+                    save_struct_layout)
 from .types import (EnumDef, EnumDict, FieldDef, FieldInstance, StructDef,
-                    StructDict, StructInstance, TypeDict)
+                    StructDict, StructInstance, StructLayout, TypeDict)
 
 __all__ = [
     "PRIMITIVE_TYPES",
@@ -12,10 +12,10 @@ __all__ = [
     "StructDef",
     "StructDict",
     "StructInstance",
+    "StructLayout",
     "TypeDict",
     "decode",
     "encode",
-    "encode_field",
-    "load_type_dict",
-    "save_type_dict",
+    "load_struct_layout",
+    "save_struct_layout",
 ]

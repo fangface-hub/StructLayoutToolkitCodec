@@ -678,3 +678,16 @@ class TypeDict:
            and StructDef dictionaries."""
         self.enum_dict = EnumDict(enum_dict)
         self.struct_dict = StructDict(struct_dict)
+
+
+@dataclass
+class StructLayout:
+    """A structured layout that combines a StructDef and its TypeDict."""
+    struct_def_name: str
+    type_dict: TypeDict
+
+    def __init__(self, struct_def_name: str, type_dict: TypeDict):
+        """Initialize StructLayout with a structure definition name
+           and a TypeDict containing EnumDef and StructDef objects."""
+        self.struct_def_name = struct_def_name
+        self.type_dict = type_dict

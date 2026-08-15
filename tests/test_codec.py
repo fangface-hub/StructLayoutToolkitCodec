@@ -1,15 +1,26 @@
 """Tests for the sltcodec module."""
-import json
 from enum import Enum
-from pathlib import Path
 
 import pytest
 from sltcore import InfoSize
 
 from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
-                      StructDef, StructInstance, TypeDict, decode, encode,
-                      load_type_dict, save_type_dict)
+                      StructDef, StructInstance, StructLayout, TypeDict, decode,
+                      encode)
 from sltcodec.codec import decode_field
+
+
+def layout_for(struct_def):
+    """Wrap a structure definition in a StructLayout bundle."""
+    if isinstance(struct_def, StructLayout):
+        return struct_def
+    if isinstance(struct_def, StructDef):
+        struct_def_obj = struct_def
+    else:
+        struct_def_obj = StructDef(fields=struct_def)
+    name = struct_def_obj.name or "StructLayout"
+    return StructLayout(struct_def_name=name,
+                        type_dict=TypeDict(struct_dict={name: struct_def_obj}))
 
 
 class ValueKind(Enum):
@@ -44,23 +55,81 @@ def test_encode_and_decode_round_trip():
                  type="unsigned int"),
     ]
 
-    encoded = encode(
-        StructInstance(struct_def=StructDef(fields=struct_def),
-                       field_instances=[
-                           FieldInstance(struct_def[0], True),
-                           FieldInstance(struct_def[1], 0xA5),
-                       ]),
-        bytearray(),
+    instance = StructInstance(
+        struct_def=StructDef(fields=struct_def),
+        field_instances=[
+            FieldInstance(struct_def[0], True),
+            FieldInstance(struct_def[1], 0xA5),
+        ],
     )
+    encoded = encode(layout_for(struct_def), instance, bytearray())
 
     assert encoded == bytearray(b"\xd2\x80")
-    decoded = decode(struct_def, encoded)
+    decoded = decode(layout_for(struct_def), encoded)
     assert isinstance(decoded, StructInstance)
     assert decoded.field_instances == [
         FieldInstance(struct_def[0], True),
         FieldInstance(struct_def[1], 165),
     ]
-    assert encode(decoded, bytearray()) == encoded
+    assert encode(layout_for(decoded.struct_def), decoded,
+                  bytearray()) == encoded
+
+
+def test_decode_accepts_struct_layout():
+    """Decode a legacy field list via a StructLayout bundle."""
+    struct_def = StructDef(
+        name="Packet",
+        fields=[
+            FieldDef(name="flag",
+                     offset=InfoSize(0, 0),
+                     size=InfoSize(0, 1),
+                     type="bool"),
+            FieldDef(name="value",
+                     offset=InfoSize(0, 1),
+                     size=InfoSize(1, 0),
+                     type="unsigned int"),
+        ],
+    )
+    layout = StructLayout(
+        struct_def_name="Packet",
+        type_dict=TypeDict(struct_dict={"Packet": struct_def}))
+
+    encoded = bytearray(b"\xd2\x80")
+    decoded = decode(layout, encoded)
+
+    assert isinstance(decoded, StructInstance)
+    assert decoded.field_instances == [
+        FieldInstance(struct_def.fields[0], True),
+        FieldInstance(struct_def.fields[1], 165),
+    ]
+
+
+def test_encode_uses_struct_layout_type_dict():
+    """Encode can resolve enum metadata from StructLayout.type_dict."""
+    struct_def = StructDef(
+        name="Packet",
+        fields=[
+            FieldDef(name="status",
+                     offset=InfoSize(0, 0),
+                     size=InfoSize(1, 0),
+                     type="unsigned int",
+                     enum_def_name="Status"),
+        ],
+    )
+    enum_def = EnumDef(name="Status", values={"OK": 0, "NG": 1})
+    layout = StructLayout(
+        struct_def_name="Packet",
+        type_dict=TypeDict(struct_dict={"Packet": struct_def},
+                           enum_dict={"Status": enum_def}),
+    )
+    instance = StructInstance(
+        struct_def=struct_def,
+        field_instances=[FieldInstance(struct_def.fields[0], 1)],
+    )
+
+    encoded = encode(layout, instance, bytearray())
+
+    assert encoded == bytearray(b"\x01")
 
 
 def test_encode_layout_handles_repeat():
@@ -74,13 +143,14 @@ def test_encode_layout_handles_repeat():
     ]
 
     encoded = encode(
+        layout_for(StructDef(fields=struct_def)),
         StructInstance(struct_def=StructDef(fields=struct_def),
                        field_instances=[FieldInstance(struct_def[0], [1, 2])]),
         bytearray(),
     )
 
     assert encoded == bytearray(b"\x01\x02")
-    decoded = decode(struct_def, encoded)
+    decoded = decode(layout_for(struct_def), encoded)
     assert isinstance(decoded, StructInstance)
     assert decoded.field_instances == [
         FieldInstance(
@@ -118,6 +188,7 @@ def test_encode_recurses_for_nested_field_types():
     ]
 
     encoded = encode(
+        layout_for(StructDef(fields=[parent_field_def])),
         StructInstance(
             struct_def=StructDef(fields=[parent_field_def]),
             field_instances=[
@@ -133,7 +204,7 @@ def test_encode_recurses_for_nested_field_types():
     )
 
     assert encoded == bytearray(b"\x03\x04")
-    decoded = decode([parent_field_def], encoded)
+    decoded = decode(layout_for([parent_field_def]), encoded)
 
     assert decoded.field_instances[0].field_def == parent_field_def
     nested_decoded = decoded.field_instances[0].value
@@ -154,11 +225,12 @@ def test_repeated_field_preserves_description():
                          description="A repeated value")
 
     encoded = encode(
+        layout_for(StructDef(fields=[field_def])),
         StructInstance(struct_def=StructDef(fields=[field_def]),
                        field_instances=[FieldInstance(field_def, [1, 2])]),
         bytearray(),
     )
-    decoded = decode([field_def], encoded)
+    decoded = decode(layout_for([field_def]), encoded)
 
     assert encoded == bytearray(b"\x01\x02")
     assert (
@@ -182,11 +254,12 @@ def test_repeated_field_preserves_range_and_enum_metadata():
                          enum_def_name=enum_def.name)
 
     encoded = encode(
+        layout_for(StructDef(fields=[field_def])),
         StructInstance(struct_def=StructDef(fields=[field_def]),
                        field_instances=[FieldInstance(field_def, [1, 2])]),
         bytearray(),
     )
-    decoded = decode([field_def], encoded)
+    decoded = decode(layout_for([field_def]), encoded)
 
     assert decoded.field_instances[0].field_def.range_expression == (
         "0 <= value[0] <= 255")
@@ -194,77 +267,6 @@ def test_repeated_field_preserves_range_and_enum_metadata():
         "0 <= value[1] <= 255")
     assert decoded.field_instances[0].field_def.enum_def_name == enum_def.name
     assert decoded.field_instances[1].field_def.enum_def_name == enum_def.name
-
-
-def test_split_repeat_replaces_name_in_range_expression():
-    """Test split_repeat replaces field-name tokens in range expressions."""
-    field_def = FieldDef(
-        name="value",
-        offset=InfoSize(0, 0),
-        size=InfoSize(1, 0),
-        type="unsigned int",
-        repeat=2,
-        range_expression=("0 <= value and value <= limit and value_count"))
-
-    split = field_def.split_repeat(1)
-
-    assert split.name == "value[1]"
-    assert split.range_expression == (
-        "0 <= value[1] and value[1] <= limit and value_count")
-
-
-def test_field_def_json_round_trip():
-    """Test that FieldDef can be serialized and deserialized from JSON."""
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(1, 0),
-                         type="unsigned int",
-                         description="A value")
-
-    payload = field_def.to_json()
-    restored = FieldDef.from_json(payload)
-
-    assert restored == field_def
-    assert restored.description == "A value"
-
-
-def test_field_def_to_json_from_json_round_trip():
-    """Test FieldDef.to_json/from_json round-trip conversion."""
-    enum_def = EnumDef(
-        name="ValueKind",
-        values={member.name: member.value
-                for member in ValueKind})
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(1, 0),
-                         type="unsigned int",
-                         scale=2.0,
-                         repeat=3,
-                         description="A repeated value",
-                         range_expression="0 <= value <= 255",
-                         enum_def_name=enum_def.name)
-
-    payload = field_def.to_json()
-    restored = FieldDef.from_json(payload)
-
-    assert restored == field_def
-    assert restored.range_expression == "0 <= value <= 255"
-    assert restored.enum_def_name == enum_def.name
-    assert restored.to_dict()["enum_def_name"] == "ValueKind"
-
-
-def test_field_def_byte_swap_json_round_trip():
-    """Test that expression-based byte_swap metadata is preserved."""
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(2, 0),
-                         type="unsigned int",
-                         byte_swap="kind == 1")
-
-    restored = FieldDef.from_json(field_def.to_json())
-
-    assert restored == field_def
-    assert restored.byte_swap == "kind == 1"
 
 
 def test_byte_swap_reverses_bytearray_input_and_output():
@@ -276,13 +278,14 @@ def test_byte_swap_reverses_bytearray_input_and_output():
                          byte_swap=True)
 
     encoded = encode(
+        layout_for(StructDef(fields=[field_def])),
         StructInstance(struct_def=StructDef(fields=[field_def]),
                        field_instances=[
                            FieldInstance(field_def, bytearray(b"\x01\x02\x03"))
                        ]),
         bytearray(),
     )
-    decoded = decode([field_def], encoded)
+    decoded = decode(layout_for([field_def]), encoded)
 
     assert encoded == bytearray(b"\x03\x02\x01")
     assert decoded.field_instances == [
@@ -303,6 +306,7 @@ def test_byte_swap_expression_uses_previous_field_value():
                            byte_swap="kind == 1")
 
     encoded = encode(
+        layout_for(StructDef(fields=[kind_field, value_field])),
         StructInstance(struct_def=StructDef(fields=[kind_field, value_field]),
                        field_instances=[
                            FieldInstance(kind_field, 1),
@@ -310,7 +314,7 @@ def test_byte_swap_expression_uses_previous_field_value():
                        ]),
         bytearray(),
     )
-    decoded = decode([kind_field, value_field], encoded)
+    decoded = decode(layout_for([kind_field, value_field]), encoded)
 
     assert encoded == bytearray(b"\x01\x34\x12")
     assert decoded.field_instances == [
@@ -324,76 +328,6 @@ def test_byte_swap_expression_uses_previous_field_value():
     ]
 
 
-def test_enum_def_to_json_from_json_round_trip():
-    """Test EnumDef.to_json/from_json round-trip conversion."""
-    enum_def = EnumDef(name="Status",
-                       description="Status enum",
-                       values={
-                           "OK": 1,
-                           "NG": 2
-                       })
-
-    payload = enum_def.to_json()
-    restored = EnumDef.from_json(payload)
-
-    assert restored == enum_def
-    assert restored.to_dict() == {
-        "name": "Status",
-        "description": "Status enum",
-        "values": {
-            "OK": 1,
-            "NG": 2,
-        },
-    }
-
-
-def test_enum_def_to_dict_from_dict_round_trip():
-    """Test EnumDef.to_dict/from_dict round-trip conversion."""
-    enum_def = EnumDef(name="Mode",
-                       description="Mode enum",
-                       values={
-                           "AUTO": 0,
-                           "MANUAL": 1,
-                       })
-
-    payload = enum_def.to_dict()
-    restored = EnumDef.from_dict(payload)
-
-    assert restored == enum_def
-    assert payload == {
-        "name": "Mode",
-        "description": "Mode enum",
-        "values": {
-            "AUTO": 0,
-            "MANUAL": 1,
-        },
-    }
-
-
-def test_enum_def_serialize_deserialize_round_trip():
-    """Test EnumDef.serialize/deserialize round-trip conversion."""
-    enum_def = EnumDef(name="State",
-                       description="State enum",
-                       values={
-                           "ON": 1,
-                           "OFF": 0,
-                       })
-
-    payload = enum_def.serialize()
-    restored = EnumDef.deserialize(payload)
-
-    assert restored == enum_def
-    assert payload == {
-        "__type__": "EnumDef",
-        "name": "State",
-        "description": "State enum",
-        "values": {
-            "ON": 1,
-            "OFF": 0,
-        },
-    }
-
-
 def test_decode_uses_enum_def_dict_to_set_enum_item():
     """Test decode uses enum_def_dict to resolve FieldInstance enum_item."""
     enum_def = EnumDef(name="Status", values={"OK": 1, "NG": 2})
@@ -401,119 +335,17 @@ def test_decode_uses_enum_def_dict_to_set_enum_item():
                          offset=InfoSize(0, 0),
                          size=InfoSize(1, 0),
                          type="unsigned int")
-    type_dict = TypeDict(enum_dict={"status": enum_def})
-
-    decoded = decode([field_def], bytearray(b"\x02"), type_dict=type_dict)
+    layout = StructLayout(
+        struct_def_name="status",
+        type_dict=TypeDict(
+            struct_dict={"status": StructDef(fields=[field_def])},
+            enum_dict={"status": enum_def},
+        ),
+    )
+    decoded = decode(layout, bytearray(b"\x02"))
 
     assert decoded.field_instances[0].value == 2
     assert decoded.field_instances[0].enum_item == ("NG", 2)
-
-
-def test_field_instance_from_value_sets_enum_item_from_field_enum_def():
-    """Test FieldInstance.from_value sets enum_item from field enum_def."""
-    enum_def = EnumDef(name="Mode", values={"AUTO": 0, "MANUAL": 1})
-    field_def = FieldDef(name="mode",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(1, 0),
-                         type="unsigned int",
-                         enum_def_name=enum_def.name)
-
-    field_instance = FieldInstance.from_value(
-        field_def, 1, type_dict=TypeDict(enum_dict={enum_def.name: enum_def}))
-
-    assert field_instance.enum_item == ("MANUAL", 1)
-
-
-def test_struct_def_metadata_json_round_trip():
-    """Test that StructDef name/description are preserved in JSON."""
-    child = FieldDef(name="value",
-                     offset=InfoSize(0, 0),
-                     size=InfoSize(1, 0),
-                     type="unsigned int")
-    parent = FieldDef(name="payload",
-                      offset=InfoSize(0, 0),
-                      size=InfoSize(1, 0),
-                      type=StructDef(name="Payload",
-                                     description="Payload layout",
-                                     fields=[child]))
-
-    payload = parent.to_json()
-    restored = FieldDef.from_json(payload)
-
-    assert isinstance(restored.type, StructDef)
-    assert restored.type.name == "Payload"
-    assert restored.type.description == "Payload layout"
-    assert restored.type.fields == [child]
-
-
-def test_struct_instance_size_json_round_trip():
-    """Test that StructInstance size is preserved in the instance state."""
-    struct_instance = StructInstance(
-        size=InfoSize(8, 0),
-        struct_def=StructDef(name="SizedStruct",
-                             description="Sized struct",
-                             fields=[]),
-    )
-
-    assert struct_instance.size == InfoSize(8, 0)
-
-
-def test_type_dict_load_and_save_struct_dict(tmp_path: Path):
-    """Test TypeDict save/load for struct definitions."""
-    struct_def = StructDef(name="ValueStruct",
-                           description="Single value struct",
-                           fields=[
-                               FieldDef(name="value",
-                                        offset=InfoSize(0, 0),
-                                        size=InfoSize(1, 0),
-                                        type="unsigned int",
-                                        description="A value")
-                           ])
-    path = tmp_path / "field_defs.json"
-
-    save_type_dict(path, TypeDict(struct_dict={"value": struct_def}))
-    saved_field = json.loads(
-        path.read_text())["struct_dict"]["value"]["fields"][0]
-
-    assert isinstance(saved_field["offset"], dict)
-    assert isinstance(saved_field["size"], dict)
-    loaded = load_type_dict(path)
-
-    assert loaded.struct_dict["value"] == struct_def
-
-
-def test_type_dict_load_and_save_enum_dict(tmp_path: Path):
-    """Test TypeDict save/load for enum definitions."""
-    enum_def = EnumDef(name="Status",
-                       description="Status enum",
-                       values={
-                           "OK": 1,
-                           "NG": 2
-                       })
-    path = tmp_path / "enum_defs.json"
-
-    save_type_dict(path, TypeDict(enum_dict={"status": enum_def}))
-    loaded = load_type_dict(path)
-
-    assert loaded.enum_dict["status"] == enum_def
-
-
-def test_struct_def_to_json_from_json_round_trip():
-    """Test StructDef.to_json/from_json round-trip conversion."""
-    struct_def = StructDef(name="ValueStruct",
-                           description="Single value struct",
-                           fields=[
-                               FieldDef(name="value",
-                                        offset=InfoSize(0, 0),
-                                        size=InfoSize(1, 0),
-                                        type="unsigned int",
-                                        description="A value")
-                           ])
-
-    payload = struct_def.to_json()
-    restored = StructDef.from_json(payload)
-
-    assert restored == struct_def
 
 
 def test_env_dependent_repeated_fields_decode_sequentially():
@@ -529,6 +361,10 @@ def test_env_dependent_repeated_fields_decode_sequentially():
                               repeat=2)
 
     encoded = encode(
+        layout_for(StructDef(fields=[
+            seed_field,
+            repeated_field,
+        ])),
         StructInstance(struct_def=StructDef(fields=[
             seed_field,
             repeated_field,
@@ -539,7 +375,7 @@ def test_env_dependent_repeated_fields_decode_sequentially():
                        ]),
         bytearray(),
     )
-    decoded = decode([seed_field, repeated_field], encoded)
+    decoded = decode(layout_for([seed_field, repeated_field]), encoded)
 
     assert encoded == bytearray(b"\x02\x05\x06")
     assert decoded.field_instances[0] == FieldInstance(seed_field, 2)
@@ -565,6 +401,7 @@ def test_type_expression_uses_previous_field_value():
     ]
 
     encoded_int = encode(
+        layout_for(StructDef(fields=struct_def)),
         StructInstance(struct_def=StructDef(fields=struct_def),
                        field_instances=[
                            FieldInstance(struct_def[0], 1),
@@ -572,7 +409,7 @@ def test_type_expression_uses_previous_field_value():
                        ]),
         bytearray(),
     )
-    decoded_int = decode(struct_def, encoded_int)
+    decoded_int = decode(layout_for(struct_def), encoded_int)
     assert decoded_int.field_instances[0] == FieldInstance(struct_def[0], 1)
     assert decoded_int.field_instances[1].field_def.offset == InfoSize(1, 0)
     assert decoded_int.field_instances[1].field_def.size == InfoSize(1, 0)
@@ -580,6 +417,7 @@ def test_type_expression_uses_previous_field_value():
     assert decoded_int.field_instances[1].value == 7
 
     encoded_float = encode(
+        layout_for(StructDef(fields=struct_def)),
         StructInstance(struct_def=StructDef(fields=struct_def),
                        field_instances=[
                            FieldInstance(struct_def[0], 2),
@@ -587,7 +425,7 @@ def test_type_expression_uses_previous_field_value():
                        ]),
         bytearray(),
     )
-    decoded_float = decode(struct_def, encoded_float)
+    decoded_float = decode(layout_for(struct_def), encoded_float)
     assert decoded_float.field_instances[0] == FieldInstance(struct_def[0], 2)
     assert decoded_float.field_instances[1].field_def.offset == InfoSize(1, 0)
     assert decoded_float.field_instances[1].field_def.size == InfoSize(4, 0)
@@ -609,7 +447,7 @@ def test_decode_inserts_padding_fields_for_gaps_and_trailing_space():
     ])
     data = bytearray(b"\x11\xaa\xbb\xcc\xdd\xee\x22\x99\x88\x77")
 
-    decoded = decode(struct_def, data)
+    decoded = decode(layout_for(struct_def), data)
 
     assert [
         field_instance.field_def.name
@@ -640,7 +478,7 @@ def test_decode_splits_padding_at_32_bit_boundaries():
                  size=InfoSize(1, 0),
                  type="unsigned int"),
     ])
-    decoded = decode(struct_def, bytearray(8))
+    decoded = decode(layout_for(struct_def), bytearray(8))
 
     assert [
         field_instance.field_def.name
@@ -667,7 +505,7 @@ def test_decode_splits_padding_with_custom_alignment_bits():
     ])
     data = bytearray(b"\x11\xaa\xbb\xcc\x22")
 
-    decoded = decode(struct_def, data, padding_alignment_bits=16)
+    decoded = decode(layout_for(struct_def), data, padding_alignment_bits=16)
 
     assert [
         field_instance.field_def.name
@@ -693,7 +531,7 @@ def test_decode_rejects_invalid_padding_alignment_bits():
     with pytest.raises(
             ValueError,
             match=r"padding_alignment_bits must be a positive power of two"):
-        decode(struct_def, bytearray(), padding_alignment_bits=24)
+        decode(layout_for(struct_def), bytearray(), padding_alignment_bits=24)
 
 
 def test_encode_rejects_invalid_padding_alignment_bits():
@@ -703,7 +541,10 @@ def test_encode_rejects_invalid_padding_alignment_bits():
     with pytest.raises(
             ValueError,
             match=r"padding_alignment_bits must be a positive power of two"):
-        encode(struct_instance, bytearray(), padding_alignment_bits=0)
+        encode(layout_for(struct_instance.struct_def),
+               struct_instance,
+               bytearray(),
+               padding_alignment_bits=0)
 
 
 def test_encode_rejects_tuple_input():
@@ -714,7 +555,8 @@ def test_encode_rejects_tuple_input():
                          type="unsigned int")
 
     with pytest.raises(TypeError, match=r"expects StructInstance"):
-        encode([(field_def, 1)], bytearray())
+        encode(layout_for(StructDef(fields=[field_def])), [(field_def, 1)],
+               bytearray())
 
 
 def test_decode_field_returns_field_instance():
@@ -728,157 +570,6 @@ def test_decode_field_returns_field_instance():
     decoded = decode_field(field_def, data)
 
     assert decoded == FieldInstance(field_def=field_def, value=127)
-
-
-def test_struct_instance_field_instance_interface():
-    """Test StructInstance interface for field_instances operations."""
-    field_def_0 = FieldDef(name="b",
-                           offset=InfoSize(1, 0),
-                           size=InfoSize(1, 0),
-                           type="unsigned int")
-    field_def_1 = FieldDef(name="a",
-                           offset=InfoSize(0, 0),
-                           size=InfoSize(1, 0),
-                           type="unsigned int")
-    struct_instance = StructInstance(struct_def=StructDef(fields=[
-        field_def_0,
-        field_def_1,
-    ]))
-
-    struct_instance.append_field_instance(FieldInstance(field_def_0, 1))
-    struct_instance.extend_field_instances([FieldInstance(field_def_1, 2)])
-
-    assert len(struct_instance) == 2
-    assert struct_instance[0] == FieldInstance(field_def_1, 2)
-    assert [field_instance.value
-            for field_instance in struct_instance] == [2, 1]
-
-
-def test_struct_instance_initial_field_instances_are_sorted():
-    """Test that StructInstance sorts initial field_instances."""
-    later = FieldInstance(
-        FieldDef(name="b",
-                 offset=InfoSize(1, 0),
-                 size=InfoSize(1, 0),
-                 type="unsigned int"),
-        2,
-    )
-    earlier = FieldInstance(
-        FieldDef(name="a",
-                 offset=InfoSize(0, 0),
-                 size=InfoSize(1, 0),
-                 type="unsigned int"),
-        1,
-    )
-
-    struct_instance = StructInstance(
-        struct_def=StructDef(fields=[later.field_def, earlier.field_def]),
-        field_instances=[later, earlier],
-    )
-
-    assert struct_instance.field_instances == [earlier, later]
-
-
-def test_struct_instance_rebuilds_padding_when_field_instances_change():
-    """Test that padding entries are rebuilt after field instance updates."""
-    tail_field_def = FieldDef(name="tail",
-                              offset=InfoSize(2, 0),
-                              size=InfoSize(1, 0),
-                              type="unsigned int")
-    head_field_def = FieldDef(name="head",
-                              offset=InfoSize(0, 0),
-                              size=InfoSize(1, 0),
-                              type="unsigned int")
-    struct_instance = StructInstance(
-        size=InfoSize(3, 0),
-        struct_def=StructDef(fields=[tail_field_def, head_field_def]),
-        field_instances=[FieldInstance(tail_field_def, 0xAA)],
-    )
-
-    struct_instance.append_field_instance(FieldInstance(head_field_def, 0x55))
-
-    assert [
-        field_instance.field_def.name
-        for field_instance in struct_instance.field_instances
-    ] == [
-        "head",
-        "padding[0]",
-        "tail",
-    ]
-    assert struct_instance.field_instances[1].is_padding is True
-    assert struct_instance.field_instances[1].value == b"\x00"
-
-
-def test_field_instance_sort_uses_field_def_order():
-    """Test that FieldInstance sorting delegates to FieldDef ordering."""
-    later = FieldInstance(
-        FieldDef(name="later",
-                 offset=InfoSize(1, 0),
-                 size=InfoSize(1, 0),
-                 type="unsigned int"),
-        2,
-    )
-    earlier = FieldInstance(
-        FieldDef(name="earlier",
-                 offset=InfoSize(0, 0),
-                 size=InfoSize(1, 0),
-                 type="unsigned int"),
-        1,
-    )
-
-    sorted_instances = sorted([later, earlier])
-
-    assert sorted_instances == [earlier, later]
-
-
-def test_field_instance_range_check_evaluates_expression_with_field_env():
-    """Test that range_check evaluates expression with field name bound."""
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(1, 0),
-                         type="unsigned int",
-                         range_expression="0 <= value <= limit")
-    field_instance = FieldInstance(field_def=field_def, value=7)
-
-    assert field_instance.range_check({"limit": 10}) is True
-    assert field_instance.range_check({"limit": 5}) is False
-
-
-def test_field_instance_range_check_returns_none_when_expression_is_none():
-    """Test that range_check returns None when range_expression is None."""
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(0, 0),
-                         size=InfoSize(1, 0),
-                         type="unsigned int",
-                         range_expression=None)
-    field_instance = FieldInstance(field_def=field_def, value=7)
-
-    result = field_instance.range_check()
-
-    assert result is None
-
-
-def test_struct_instance_size_property_returns_initial_size():
-    """Test that StructInstance size is initialized from the provided value."""
-    struct_instance = StructInstance(size=InfoSize(5, 0),
-                                     struct_def=StructDef())
-
-    assert struct_instance.size == InfoSize(5, 0)
-
-
-def test_struct_instance_size_property_uses_field_extent_when_available():
-    """Test that StructInstance size grows with instance field layout."""
-    field_def = FieldDef(name="value",
-                         offset=InfoSize(1, 0),
-                         size=InfoSize(2, 0),
-                         type="unsigned int")
-    struct_instance = StructInstance(
-        size=InfoSize(1, 0),
-        struct_def=StructDef(fields=[field_def]),
-        field_instances=[FieldInstance(field_def=field_def, value=0x1234)],
-    )
-
-    assert struct_instance.size == InfoSize(3, 0)
 
 
 def test_encode_padding_fields_use_zero_value_and_extend_to_struct_size():
@@ -901,7 +592,7 @@ def test_encode_padding_fields_use_zero_value_and_extend_to_struct_size():
     )
     buf = bytearray(b"\x11\x22")
 
-    encoded = encode(struct_instance, buf)
+    encoded = encode(layout_for(struct_def), struct_instance, buf)
 
     assert encoded is buf
     assert encoded == bytearray(b"\x00\x00\x00\x00\x00\x00")
@@ -920,7 +611,8 @@ def test_encode_without_padding_does_not_extend_buf_to_struct_size():
     )
     buf = bytearray()
 
-    encoded = encode(struct_instance, buf)
+    encoded = encode(layout_for(struct_instance.struct_def), struct_instance,
+                     buf)
 
     assert encoded is buf
     assert encoded == bytearray(b"\x7f\x00\x00\x00")

@@ -9,7 +9,7 @@ from sltcalc import SltEval
 from sltcore import Info, InfoSize, bits_get, bits_set
 
 from .types import (EnumDef, FieldDef, FieldInstance, StructDef, StructInstance,
-                    TypeDict)
+                    StructLayout, TypeDict)
 
 PRIMITIVE_TYPES = {
     "bool",
@@ -47,78 +47,87 @@ def _validate_struct_instance(struct_instance: StructInstance) -> None:
                 f"{type(field_instance).__name__}")
 
 
-def save_type_dict(path: str | Path, type_dict: TypeDict) -> None:
-    """Save TypeDict to a JSON file."""
+def save_struct_layout(struct_layout: StructLayout, path: str | Path) -> None:
+    """Save a StructLayout to a JSON file."""
+    if not isinstance(struct_layout, StructLayout):
+        raise TypeError(
+            "save_struct_layout() expects StructLayout for struct_layout")
+
+    type_dict = struct_layout.type_dict
     payload = {
-        "struct_dict": {
-            name: struct_def.to_dict()
-            for name, struct_def in type_dict.struct_dict.items()
-        },
-        "enum_dict": {
-            name: enum_def.to_dict()
-            for name, enum_def in type_dict.enum_dict.items()
+        "struct_def_name": struct_layout.struct_def_name,
+        "type_dict": {
+            "struct_dict": {
+                name: struct_def.to_dict()
+                for name, struct_def in type_dict.struct_dict.items()
+            },
+            "enum_dict": {
+                name: enum_def.to_dict()
+                for name, enum_def in type_dict.enum_dict.items()
+            },
         },
     }
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                           encoding="utf-8")
 
 
-def load_type_dict(path: str | Path) -> TypeDict:
-    """Load TypeDict from a JSON file."""
+def load_struct_layout(path: str | Path) -> StructLayout:
+    """Load a StructLayout from a JSON file."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
 
-    struct_payload = data.get("struct_dict")
-    enum_payload = data.get("enum_dict")
+    type_payload = data.get("type_dict")
+    if isinstance(type_payload, dict):
+        struct_payload = type_payload.get("struct_dict", {})
+        enum_payload = type_payload.get("enum_dict", {})
+    else:
+        struct_payload = data.get("struct_dict", {})
+        enum_payload = data.get("enum_dict", {})
 
-    if isinstance(struct_payload, dict) and isinstance(enum_payload, dict):
-        return TypeDict(
-            struct_dict={
-                name: StructDef.from_dict(struct_def_data)
-                for name, struct_def_data in struct_payload.items()
-            },
-            enum_dict={
-                name: EnumDef.from_dict(enum_def_data)
-                for name, enum_def_data in enum_payload.items()
-            },
-        )
-
-    # Backward compatibility: old files that stored only struct or enum maps.
-    legacy_entries: dict[str, Any] = data if isinstance(data, dict) else {}
-    if any(
-            isinstance(item, dict) and "fields" in item
-            for item in legacy_entries.values()):
-        return TypeDict(
-            struct_dict={
-                name: StructDef.from_dict(struct_def_data)
-                for name, struct_def_data in legacy_entries.items()
-            })
-    return TypeDict(
+    type_dict = TypeDict(
+        struct_dict={
+            name: StructDef.from_dict(struct_def_data)
+            for name, struct_def_data in struct_payload.items()
+        },
         enum_dict={
             name: EnumDef.from_dict(enum_def_data)
-            for name, enum_def_data in legacy_entries.items()
-        })
+            for name, enum_def_data in enum_payload.items()
+        },
+    )
+
+    struct_def_name = data.get("struct_def_name")
+    if not struct_def_name:
+        if struct_payload:
+            struct_def_name = next(iter(struct_payload))
+        else:
+            struct_def_name = "StructLayout"
+
+    return StructLayout(struct_def_name=struct_def_name, type_dict=type_dict)
 
 
 def save_struct_def_dict(path: str | Path,
                          struct_def_dict: dict[str, StructDef]) -> None:
     """Save a structure definition dictionary to a JSON file."""
-    save_type_dict(path, TypeDict(struct_dict=struct_def_dict))
+    save_struct_layout(
+        StructLayout(struct_def_name="StructLayout",
+                     type_dict=TypeDict(struct_dict=struct_def_dict)), path)
 
 
 def load_struct_def_dict(path: str | Path) -> dict[str, StructDef]:
     """Load a structure definition dictionary from a JSON file."""
-    return load_type_dict(path).struct_dict.items_dict()
+    return load_struct_layout(path).type_dict.struct_dict.items_dict()
 
 
 def save_enum_def_dict(path: str | Path, enum_def_dict: dict[str,
                                                              EnumDef]) -> None:
     """Save an enum definition dictionary to a JSON file."""
-    save_type_dict(path, TypeDict(enum_dict=enum_def_dict))
+    save_struct_layout(
+        StructLayout(struct_def_name="StructLayout",
+                     type_dict=TypeDict(enum_dict=enum_def_dict)), path)
 
 
 def load_enum_def_dict(path: str | Path) -> dict[str, EnumDef]:
     """Load an enum definition dictionary from a JSON file."""
-    return load_type_dict(path).enum_dict.items_dict()
+    return load_struct_layout(path).type_dict.enum_dict.items_dict()
 
 
 def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
@@ -238,9 +247,11 @@ def _prepare_field_info(
             raise TypeError(
                 "Nested StructDef fields must be encoded with StructInstance "
                 "values")
-        nested_bytes = encode(value,
+        nested_bytes = encode(_layout_for_struct_def(value.struct_def,
+                                                     type_dict,
+                                                     name=field_def.name),
+                              value,
                               bytearray(),
-                              type_dict,
                               padding_alignment_bits=padding_alignment_bits)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
@@ -289,22 +300,22 @@ def encode_field(
 
 
 def encode(
+    struct_layout: StructLayout,
     struct_instance: StructInstance,
     buf: bytearray,
-    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> bytearray:
     """Encode decode() result into a bytearray.
 
     Parameters
     ----------
+    struct_layout : StructLayout
+        The structural layout bundle used to resolve the root definition and
+        its type dictionary via ``struct_layout.type_dict``.
     struct_instance : StructInstance
         The structure instance to encode.
     buf : bytearray
         The base bytearray instance to write into.
-    type_dict : TypeDict | None, optional
-        Type dictionaries including structure and enum definitions,
-        by default None.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
 
@@ -315,6 +326,12 @@ def encode(
     """
     _validate_struct_instance(struct_instance)
     _validate_padding_alignment_bits(padding_alignment_bits)
+    if not isinstance(struct_layout, StructLayout):
+        raise TypeError("encode() expects StructLayout for struct_layout")
+    if struct_layout.type_dict is None:
+        raise ValueError("StructLayout.type_dict is required for encode()")
+
+    type_dict = struct_layout.type_dict
     env: dict[str, Any] = {}
     has_padding = False
 
@@ -401,9 +418,12 @@ def decode_field(
         byte_swap=byte_swap,
     )
     if isinstance(resolved_type, StructDef):
+        nested_layout = _layout_for_struct_def(resolved_type,
+                                               type_dict,
+                                               name=field_def.name)
         return FieldInstance(
             field_def=resolved_field_def,
-            value=decode(resolved_type, bytearray(info.to_bytes), type_dict,
+            value=decode(nested_layout, bytearray(info.to_bytes),
                          padding_alignment_bits),
         )
     if resolved_type == "bool":
@@ -431,23 +451,39 @@ def decode_field(
                                     type_dict=type_dict)
 
 
+def _layout_for_struct_def(struct_def: StructDef,
+                           type_dict: TypeDict | None = None,
+                           name: str | None = None) -> StructLayout:
+    """Create a StructLayout for a StructDef and optional TypeDict."""
+    resolved_name = name or struct_def.name or "StructLayout"
+    if type_dict is None:
+        resolved_type_dict = TypeDict(struct_dict={resolved_name: struct_def})
+    else:
+        struct_dict = dict(type_dict.struct_dict.items_dict())
+        if resolved_name not in struct_dict:
+            struct_dict[resolved_name] = struct_def
+        resolved_type_dict = TypeDict(
+            enum_dict=type_dict.enum_dict.items_dict(),
+            struct_dict=struct_dict,
+        )
+    return StructLayout(struct_def_name=resolved_name,
+                        type_dict=resolved_type_dict)
+
+
 def decode(
-    struct_def: StructDef | list[FieldDef],
+    struct_layout: StructLayout,
     data: bytearray | bytes,
-    type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> StructInstance:
     """Decode a bytearray into field values according to a layout.
 
     Parameters
     ----------
-    struct_def : StructDef | list[FieldDef]
-        The definitions of the fields to decode.
+    struct_layout : StructLayout
+        A layout bundle that resolves the root structure via
+        ``struct_layout.type_dict.struct_dict[struct_layout.struct_def_name]``.
     data : bytearray | bytes
         The data to decode.
-    type_dict : TypeDict | None, optional
-        Type dictionaries including structure and enum definitions,
-        by default None.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
     Returns
@@ -456,9 +492,14 @@ def decode(
         The decoded structure instance.
     """
     _validate_padding_alignment_bits(padding_alignment_bits)
+    if not isinstance(struct_layout, StructLayout):
+        raise TypeError("decode() expects StructLayout for struct_layout")
+    if struct_layout.type_dict is None:
+        raise ValueError("StructLayout.type_dict is required for decode()")
+
     env = {}
-    struct_def_obj = (struct_def if isinstance(struct_def, StructDef) else
-                      StructDef(fields=struct_def))
+    type_dict = struct_layout.type_dict
+    struct_def_obj = type_dict.struct_dict[struct_layout.struct_def_name]
     result = StructInstance(struct_def=struct_def_obj)
     current_position = InfoSize(0, 0)
     padding_index = 0

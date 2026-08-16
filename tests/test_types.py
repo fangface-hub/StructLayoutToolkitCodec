@@ -169,6 +169,89 @@ def test_field_instance_from_value_sets_enum_item_from_field_enum_def():
     assert field_instance.enum_item == ("MANUAL", 1)
 
 
+def _mode_enum_fixture() -> tuple[EnumDef, FieldDef, TypeDict]:
+    """Build an enum-backed field definition and its type dictionary."""
+    enum_def = EnumDef(name="Mode", values={"AUTO": 0, "MANUAL": 1})
+    field_def = FieldDef(name="mode",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         enum_def_name=enum_def.name)
+    type_dict = TypeDict(enum_dict={enum_def.name: enum_def})
+    return enum_def, field_def, type_dict
+
+
+def test_field_instance_with_value_keeps_original_unchanged():
+    """Test FieldInstance.with_value does not mutate the original."""
+    _, field_def, type_dict = _mode_enum_fixture()
+    original = FieldInstance.from_value(field_def, 0, type_dict=type_dict)
+
+    original.with_value(1, type_dict)
+
+    assert original.value == 0
+    assert original.enum_item == ("AUTO", 0)
+
+
+def test_field_instance_with_value_returns_new_instance():
+    """Test FieldInstance.with_value returns a new instance with the value."""
+    _, field_def, type_dict = _mode_enum_fixture()
+    original = FieldInstance.from_value(field_def, 0, type_dict=type_dict)
+
+    updated = original.with_value(1, type_dict)
+
+    assert updated is not original
+    assert updated.value == 1
+
+
+def test_field_instance_with_value_preserves_field_def_and_padding():
+    """Test FieldInstance.with_value preserves field_def and is_padding."""
+    _, field_def, type_dict = _mode_enum_fixture()
+    original = FieldInstance.from_value(field_def,
+                                        0,
+                                        type_dict=type_dict,
+                                        is_padding=True)
+
+    updated = original.with_value(1, type_dict)
+
+    assert updated.field_def is original.field_def
+    assert updated.is_padding is True
+
+
+def test_field_instance_with_value_updates_enum_item():
+    """Test FieldInstance.with_value recomputes a matching enum_item."""
+    _, field_def, type_dict = _mode_enum_fixture()
+    original = FieldInstance.from_value(field_def, 0, type_dict=type_dict)
+
+    updated = original.with_value(1, type_dict)
+
+    assert updated.enum_item == ("MANUAL", 1)
+
+
+def test_field_instance_with_value_clears_unmatched_enum_item():
+    """Test FieldInstance.with_value clears enum_item when unmatched."""
+    _, field_def, type_dict = _mode_enum_fixture()
+    original = FieldInstance.from_value(field_def, 0, type_dict=type_dict)
+
+    updated = original.with_value(7, type_dict)
+
+    assert updated.enum_item is None
+
+
+def test_field_instance_with_value_without_type_dict():
+    """Test FieldInstance.with_value works for plain fields."""
+    field_def = FieldDef(name="count",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int")
+    original = FieldInstance.from_value(field_def, 1)
+
+    updated = original.with_value(2)
+
+    assert updated.value == 2
+    assert updated.enum_item is None
+    assert original.value == 1
+
+
 def test_struct_def_metadata_json_round_trip():
     """Test that StructDef name/description are preserved in JSON."""
     child = FieldDef(name="value",

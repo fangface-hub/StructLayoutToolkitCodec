@@ -347,6 +347,15 @@ class FieldInstance:
                    enum_item=enum_item,
                    is_padding=is_padding)
 
+    def with_value(self,
+                   value: Any,
+                   type_dict: "TypeDict | None" = None) -> "FieldInstance":
+        """Return a new FieldInstance with the given value applied."""
+        return type(self).from_value(field_def=self.field_def,
+                                     value=value,
+                                     type_dict=type_dict,
+                                     is_padding=self.is_padding)
+
     @staticmethod
     def _resolve_enum_def(field_def: FieldDef,
                           type_dict: "TypeDict | None") -> EnumDef | None:

@@ -61,6 +61,19 @@ Layout persistence uses the explicit names `save_struct_layout` and
 `load_struct_layout`. The former `save_type_dict` and `load_type_dict` API is
 not part of the current public interface.
 
+`FieldInstance` stays frozen. To change a decoded value, use
+`FieldInstance.with_value(value, type_dict=None)`, which returns a new
+instance instead of mutating the original. It keeps `field_def` and
+`is_padding`, and recomputes `enum_item` from the new value and `type_dict`
+by delegating to `FieldInstance.from_value`.
+
+```python
+updated_field = field_instance.with_value(
+    new_value,
+    struct_layout.type_dict,
+)
+```
+
 ## Versioning And Release
 
 Version bump scripts are provided for patch, minor, and major releases:

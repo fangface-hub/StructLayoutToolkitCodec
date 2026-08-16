@@ -188,6 +188,7 @@ internal implementation details and are omitted from the public method tables.
 | --- | --- |
 | `range_check(env=None)` | Evaluate the field's range expression. |
 | `from_value(field_def, value, type_dict=None, is_padding=False)` | Create an instance and resolve matching enum metadata. |
+| `with_value(value, type_dict=None)` | Return a new instance with the given value; keeps `field_def` and `is_padding` and recomputes `enum_item`. |
 | `__lt__(other)` | Compare field instances using field-definition order. |
 
 #### `StructDef`

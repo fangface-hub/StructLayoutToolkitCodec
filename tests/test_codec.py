@@ -215,6 +215,24 @@ def test_encode_recurses_for_nested_field_types():
             ]
 
 
+def test_decode_field_uses_nested_struct_instance_size():
+    """Test that nested decoding determines the field's actual size."""
+    child_field_def = FieldDef(name="value",
+                               offset=InfoSize(0, 0),
+                               size=InfoSize(1, 0),
+                               type="unsigned int")
+    parent_field_def = FieldDef(name="nested",
+                                offset=InfoSize(0, 0),
+                                size=InfoSize(4, 0),
+                                type=StructDef(fields=[child_field_def]))
+
+    decoded = decode_field(parent_field_def, bytearray(b"\x7f"))
+
+    assert decoded is not None
+    assert decoded.field_def.size == InfoSize(1, 0)
+    assert decoded.value.size == InfoSize(1, 0)
+
+
 def test_repeated_field_preserves_description():
     """Test that repeated fields keep their description on decoded entries."""
     field_def = FieldDef(name="value",
@@ -570,6 +588,37 @@ def test_decode_field_returns_field_instance():
     decoded = decode_field(field_def, data)
 
     assert decoded == FieldInstance(field_def=field_def, value=127)
+
+
+def test_decode_field_sets_actual_size_on_field_instance():
+    """Test that decode_field stores the resolved Info size."""
+    field_def = FieldDef(name="value",
+                         offset="offset",
+                         size="field_size",
+                         type="unsigned int")
+
+    decoded = decode_field(field_def,
+                           bytearray(b"\x7f"),
+                           env={
+                               "offset": 0,
+                               "field_size": 1
+                           })
+
+    assert decoded is not None
+    assert decoded.field_def.size == InfoSize(1, 0)
+
+
+def test_decode_struct_instance_size_matches_decoded_layout():
+    """Test that decode reports the complete decoded layout size."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(2, 0),
+                         size=InfoSize(2, 0),
+                         type="unsigned int")
+    data = bytearray(b"\x00\x00\x7f\x00")
+
+    decoded = decode(layout_for(StructDef(fields=[field_def])), data)
+
+    assert decoded.size == InfoSize(len(data), 0)
 
 
 def test_encode_padding_fields_use_zero_value_and_extend_to_struct_size():

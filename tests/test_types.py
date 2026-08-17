@@ -13,23 +13,6 @@ class ValueKind(Enum):
     B = 2
 
 
-def test_split_repeat_replaces_name_in_range_expression():
-    """Test split_repeat replaces field-name tokens in range expressions."""
-    field_def = FieldDef(
-        name="value",
-        offset=InfoSize(0, 0),
-        size=InfoSize(1, 0),
-        type="unsigned int",
-        repeat=2,
-        range_expression=("0 <= value and value <= limit and value_count"))
-
-    split = field_def.split_repeat(1)
-
-    assert split.name == "value[1]"
-    assert split.range_expression == (
-        "0 <= value[1] and value[1] <= limit and value_count")
-
-
 def test_field_def_json_round_trip():
     """Test that FieldDef can be serialized and deserialized from JSON."""
     field_def = FieldDef(name="value",

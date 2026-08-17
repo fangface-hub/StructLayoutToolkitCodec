@@ -46,6 +46,12 @@ encoded = encode(layout, instance, bytearray())
 decoded = decode(layout, encoded)
 ```
 
+`decode` returns a `StructInstance` whose `size` is the actual end of the
+decoded layout. `decode_field` stores the actual decoded size in the returned
+`FieldInstance.field_def.size`. For nested `StructDef` fields, that size comes
+from the nested `StructInstance.size`; for repeated fields, the next element's
+offset advances by the actual size of the previous element.
+
 ## Field Types
 
 The public `PRIMITIVE_TYPES` set contains:
@@ -61,7 +67,6 @@ The public `PRIMITIVE_TYPES` set contains:
 Store named structures in `TypeDict.struct_dict` and enums in `TypeDict.enum_dict`. A field refers to an enum by its `enum_def_name`; the codec resolves it through `StructLayout.type_dict`.
 
 ```python
-| `__lt__(other)` | Compare enum definitions using their serialized ordering. |
 from sltcore import InfoSize
 from sltcodec import EnumDef, FieldDef, StructDef, StructLayout, TypeDict, decode
 
@@ -85,7 +90,6 @@ layout = StructLayout(
 )
 
 decoded = decode(layout, bytearray(b"\x01"))
-| `__lt__(other)` | Compare field definitions using their serialized ordering. |
 assert decoded.field_instances[0].enum_item == ("NG", 1)
 ```
 
@@ -100,7 +104,6 @@ from sltcodec import load_struct_layout, save_struct_layout
 path = Path("struct_layout.json")
 save_struct_layout(layout, path)
 loaded = load_struct_layout(path)
-| `__lt__(other)` | Compare field instances using field-definition order. |
 assert loaded == layout
 ```
 
@@ -168,7 +171,6 @@ internal implementation details and are omitted from the public method tables.
 
 | Method | Description |
 | --- | --- |
-| `split_repeat(index, offset=None, size=None)` | Create one field definition from a repeated field. |
 | `to_dict()` | Convert the definition to a JSON-compatible dictionary. |
 | `to_json()` | Convert the definition to a JSON string. |
 | `from_dict(data)` | Create a `FieldDef` from a dictionary. |

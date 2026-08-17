@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -259,17 +260,30 @@ def _prepare_field_info(
     return offset, size, info
 
 
-def _split_repeated_field(field_def: FieldDef,
-                          index: int,
-                          env: dict[str, Any],
-                          offset: InfoSize | str | None = None) -> FieldDef:
-    """Create a repeated-field definition with resolved offset and size."""
-    resolved_offset = (_resolve_offset(field_def, env)
-                       if offset is None else offset)
-    resolved_size = _resolve_size(field_def, env)
-    return field_def.split_repeat(index,
-                                  offset=resolved_offset,
-                                  size=resolved_size)
+def _repeated_field_def(field_def: FieldDef, index: int, offset: InfoSize,
+                        size: InfoSize | str) -> FieldDef:
+    """Create a resolved field definition for one repeated value."""
+    repeated_name = f"{field_def.name}[{index}]"
+
+    def replace_name(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        pattern = (rf"(?<![0-9A-Za-z_]){re.escape(field_def.name)}"
+                   rf"(?![0-9A-Za-z_])")
+        return re.sub(pattern, repeated_name, value)
+
+    return FieldDef(
+        name=repeated_name,
+        offset=offset,
+        size=size,
+        type=replace_name(field_def.type),
+        scale=field_def.scale,
+        repeat=None,
+        description=field_def.description,
+        range_expression=replace_name(field_def.range_expression),
+        enum_def_name=field_def.enum_def_name,
+        byte_swap=replace_name(field_def.byte_swap),
+    )
 
 
 def encode_field(
@@ -345,17 +359,17 @@ def encode(
             value = bytearray(padding_size.bytes)
         if field_def.repeat is not None and field_def.repeat > 1:
             current_offset = _resolve_offset(field_def, env)
-            resolved_size = _resolve_size(field_def, env)
             values = list(value)
 
             for i in range(field_def.repeat):
-                field_def_repeat = _split_repeated_field(
-                    field_def, i, env, current_offset)
+                field_def_repeat = _repeated_field_def(field_def, i,
+                                                       current_offset,
+                                                       field_def.size)
+                resolved_size = _resolve_size(field_def_repeat, env)
                 encode_field(field_def_repeat, values[i], buf, env, type_dict,
                              padding_alignment_bits)
                 env[field_def_repeat.name] = values[i]
-                if isinstance(current_offset, InfoSize) and isinstance(
-                        resolved_size, InfoSize):
+                if isinstance(current_offset, InfoSize):
                     current_offset += resolved_size
             continue
 
@@ -405,10 +419,20 @@ def decode_field(
     if byte_swap:
         info = _byte_swap_info(info, size)
     resolved_type = _resolve_field_type(field_def.type, type_dict, env)
+    nested_value = None
+    if isinstance(resolved_type, StructDef):
+        nested_layout = _layout_for_struct_def(resolved_type,
+                                               type_dict,
+                                               name=field_def.name)
+        nested_value = decode(nested_layout, bytearray(info.to_bytes),
+                              padding_alignment_bits)
+        actual_size = nested_value.size
+    else:
+        actual_size = info.info_size
     resolved_field_def = FieldDef(
         name=field_def.name,
         offset=offset,
-        size=size,
+        size=actual_size,
         type=resolved_type,
         scale=field_def.scale,
         repeat=field_def.repeat,
@@ -418,13 +442,9 @@ def decode_field(
         byte_swap=byte_swap,
     )
     if isinstance(resolved_type, StructDef):
-        nested_layout = _layout_for_struct_def(resolved_type,
-                                               type_dict,
-                                               name=field_def.name)
         return FieldInstance(
             field_def=resolved_field_def,
-            value=decode(nested_layout, bytearray(info.to_bytes),
-                         padding_alignment_bits),
+            value=nested_value,
         )
     if resolved_type == "bool":
         return FieldInstance.from_value(resolved_field_def,
@@ -548,19 +568,32 @@ def decode(
             continue
         # Handle repeated fields
         current_offset = _resolve_offset(field_def, env)
-        resolved_size = _resolve_size(field_def, env)
         append_padding_until(current_offset)
         for i in range(field_def.repeat):
-            field_def_repeat = _split_repeated_field(field_def, i, env,
-                                                     current_offset)
+            field_def_repeat = _repeated_field_def(field_def, i, current_offset,
+                                                   field_def.size)
             field_instance = decode_field(field_def_repeat, data, env,
                                           type_dict, padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
-                current_position = current_offset + resolved_size
-            current_offset += resolved_size
+                actual_size = field_instance.field_def.size
+            else:
+                actual_size = _resolve_size(field_def_repeat, env)
+            if isinstance(current_offset, InfoSize) and isinstance(
+                    actual_size, InfoSize):
+                current_offset += actual_size
+                current_position = current_offset
 
+    actual_size = InfoSize(0, 0)
+    for field_instance in result.field_instances:
+        field_def = field_instance.field_def
+        if (isinstance(field_def.offset, InfoSize)
+                and isinstance(field_def.size, InfoSize)):
+            field_end = field_def.offset + field_def.size
+            if field_end > actual_size:
+                actual_size = field_end
+    result.size = actual_size
     append_padding_until(result.size)
 
     return result

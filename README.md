@@ -74,6 +74,12 @@ updated_field = field_instance.with_value(
 )
 ```
 
+Decoded sizes reflect the actual data consumed. `decode` sets
+`StructInstance.size` to the end of the decoded layout, and `decode_field`
+stores the actual size in `FieldInstance.field_def.size`. For nested structures,
+the nested `StructInstance.size` is used; repeated fields advance each next
+offset by the preceding element's actual size.
+
 ## Versioning And Release
 
 Version bump scripts are provided for patch, minor, and major releases:

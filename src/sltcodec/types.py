@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from functools import total_ordering
@@ -111,46 +110,6 @@ class FieldDef:
     byte_swap: bool | str = field(
         default=False,
         metadata={"desc": "Whether to reverse the field byte order"})
-
-    def split_repeat(self,
-                     index: int,
-                     offset: InfoSize | str | None = None,
-                     size: InfoSize | str | None = None) -> "FieldDef":
-        """Create a single repeated-field definition for the given index."""
-        split_name = f"{self.name}[{index}]"
-        split_offset_source = self.offset if offset is None else offset
-        split_size_source = self.size if size is None else size
-        split_offset = self._replace_name_in_expression(split_offset_source,
-                                                        self.name, split_name)
-        split_size = self._replace_name_in_expression(split_size_source,
-                                                      self.name, split_name)
-        split_type = self._replace_name_in_expression(self.type, self.name,
-                                                      split_name)
-        split_range_expression = self._replace_name_in_expression(
-            self.range_expression, self.name, split_name)
-        split_byte_swap = self._replace_name_in_expression(
-            self.byte_swap, self.name, split_name)
-
-        return FieldDef(name=split_name,
-                        offset=split_offset,
-                        size=split_size,
-                        type=split_type,
-                        scale=self.scale,
-                        repeat=None,
-                        description=self.description,
-                        range_expression=split_range_expression,
-                        enum_def_name=self.enum_def_name,
-                        byte_swap=split_byte_swap)
-
-    @staticmethod
-    def _replace_name_in_expression(value: Any, old_name: str,
-                                    new_name: str) -> Any:
-        """Replace standalone old_name tokens in expression-like strings."""
-        if not isinstance(value, str):
-            return value
-        pattern = (rf"(?<![0-9A-Za-z_]){re.escape(old_name)}"
-                   rf"(?![0-9A-Za-z_])")
-        return re.sub(pattern, lambda _: new_name, value)
 
     def __lt__(self, other: object) -> bool:
         """Compare field definitions using a stable serialized sort key."""

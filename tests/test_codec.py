@@ -7,7 +7,7 @@ from sltcore import InfoSize
 from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
                       StructDef, StructInstance, StructLayout, TypeDict, decode,
                       encode)
-from sltcodec.codec import decode_field
+from sltcodec.codec import _resolve_info_size, decode_field
 
 
 def layout_for(struct_def):
@@ -606,6 +606,15 @@ def test_decode_field_sets_actual_size_on_field_instance():
 
     assert decoded is not None
     assert decoded.field_def.size == InfoSize(1, 0)
+
+
+def test_resolve_info_size_returns_expression_info_size_unchanged():
+    """Test that expressions resolving to InfoSize preserve the result."""
+    info_size = InfoSize(2, 3)
+
+    resolved = _resolve_info_size("field_size", {"field_size": info_size})
+
+    assert resolved is info_size
 
 
 def test_decode_struct_instance_size_matches_decoded_layout():

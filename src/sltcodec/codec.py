@@ -136,18 +136,10 @@ def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
     if isinstance(value, str):
         stleval = SltEval(env)
         resolved_byte = stleval.eval(value)
+        if isinstance(resolved_byte, InfoSize):
+            return resolved_byte
         return InfoSize(resolved_byte, 0)
     return value
-
-
-def _resolve_offset(field_def: FieldDef, env: dict[str, Any]) -> InfoSize:
-    """Resolve a field offset that can be static or expression-based."""
-    return _resolve_info_size(field_def.offset, env)
-
-
-def _resolve_size(field_def: FieldDef, env: dict[str, Any]) -> InfoSize:
-    """Resolve a field size that can be static or expression-based."""
-    return _resolve_info_size(field_def.size, env)
 
 
 def _resolve_byte_swap(field_def: FieldDef, env: dict[str, Any]) -> bool:
@@ -157,25 +149,10 @@ def _resolve_byte_swap(field_def: FieldDef, env: dict[str, Any]) -> bool:
     return field_def.byte_swap
 
 
-def _byte_swap_info(info: Info, size: InfoSize) -> Info:
-    """Reverse the byte representation of an Info payload."""
-    return Info.from_bytes(info.to_bytes[::-1], size, scale=info.scale)
-
-
 def _is_padding_field_def(field_def: FieldDef) -> bool:
     """Check whether a field definition represents padding."""
     return (field_def.name.startswith("padding[")
             and field_def.type in ["bytes", "bytearray"])
-
-
-def _info_size_to_bits(info_size: InfoSize) -> int:
-    """Convert InfoSize to an absolute bit count."""
-    return info_size.byte * 8 + info_size.bit
-
-
-def _info_size_from_bits(total_bits: int) -> InfoSize:
-    """Create InfoSize from an absolute bit count."""
-    return InfoSize(total_bits >> 3, total_bits & 0x7)
 
 
 def _validate_padding_alignment_bits(padding_alignment_bits: int) -> None:
@@ -237,8 +214,8 @@ def _prepare_field_info(
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> tuple[InfoSize, InfoSize, Info] | None:
     """Resolve a field definition into an offset, size, and info payload."""
-    offset = _resolve_offset(field_def, env)
-    size = _resolve_size(field_def, env)
+    offset = _resolve_info_size(field_def.offset, env)
+    size = _resolve_info_size(field_def.size, env)
     if size.byte == 0 and size.bit == 0:
         return None
 
@@ -305,7 +282,7 @@ def encode_field(
 
     offset, size, info = prepared
     if _resolve_byte_swap(field_def, env):
-        info = _byte_swap_info(info, size)
+        info = info.byte_swap
     required_bytes = (offset + size).bytes
     if len(buf) < required_bytes:
         buf.extend(b"\x00" * (required_bytes - len(buf)))
@@ -355,17 +332,17 @@ def encode(
             has_padding = True
         value = field_value.value
         if _is_padding_field_def(field_def):
-            padding_size = _resolve_size(field_def, env)
+            padding_size = _resolve_info_size(field_def.size, env)
             value = bytearray(padding_size.bytes)
         if field_def.repeat is not None and field_def.repeat > 1:
-            current_offset = _resolve_offset(field_def, env)
+            current_offset = _resolve_info_size(field_def.offset, env)
             values = list(value)
 
             for i in range(field_def.repeat):
                 field_def_repeat = _repeated_field_def(field_def, i,
                                                        current_offset,
                                                        field_def.size)
-                resolved_size = _resolve_size(field_def_repeat, env)
+                resolved_size = _resolve_info_size(field_def_repeat.size, env)
                 encode_field(field_def_repeat, values[i], buf, env, type_dict,
                              padding_alignment_bits)
                 env[field_def_repeat.name] = values[i]
@@ -410,14 +387,14 @@ def decode_field(
     """
     if env is None:
         env = {}
-    offset = _resolve_offset(field_def, env)
-    size = _resolve_size(field_def, env)
+    offset = _resolve_info_size(field_def.offset, env)
+    size = _resolve_info_size(field_def.size, env)
     if size.byte == 0 and size.bit == 0:
         return None
     info = bits_get(data, offset, size, scale=field_def.scale)
     byte_swap = _resolve_byte_swap(field_def, env)
     if byte_swap:
-        info = _byte_swap_info(info, size)
+        info = info.byte_swap
     resolved_type = _resolve_field_type(field_def.type, type_dict, env)
     nested_value = None
     if isinstance(resolved_type, StructDef):
@@ -526,22 +503,21 @@ def decode(
 
     def append_padding_until(target_offset: InfoSize) -> None:
         nonlocal current_position, padding_index
-        start_bits = _info_size_to_bits(current_position)
-        end_bits = _info_size_to_bits(target_offset)
+        start_bits = current_position.bits
+        end_bits = target_offset.bits
         if end_bits <= start_bits:
             return
 
         chunk_start_bits = start_bits
         while chunk_start_bits < end_bits:
-            chunk_start = _info_size_from_bits(chunk_start_bits)
-            bits_to_boundary = _info_size_to_bits(
-                chunk_start.align_to(padding_alignment_bits))
+            chunk_start = InfoSize(0, chunk_start_bits)
+            bits_to_boundary = chunk_start.align_to(padding_alignment_bits).bits
             chunk_size_bits = bits_to_boundary or padding_alignment_bits
             chunk_end_bits = min(end_bits, chunk_start_bits + chunk_size_bits)
             padding_field_def = FieldDef(
                 name=f"padding[{padding_index}]",
-                offset=_info_size_from_bits(chunk_start_bits),
-                size=_info_size_from_bits(chunk_end_bits - chunk_start_bits),
+                offset=InfoSize(0, chunk_start_bits),
+                size=InfoSize(0, chunk_end_bits - chunk_start_bits),
                 type="bytes",
                 description="Auto-generated padding",
             )
@@ -556,7 +532,7 @@ def decode(
     for field_def in _as_field_defs(struct_def_obj):
         # Handle non-repeated fields
         if field_def.repeat is None or field_def.repeat <= 1:
-            resolved_offset = _resolve_offset(field_def, env)
+            resolved_offset = _resolve_info_size(field_def.offset, env)
             append_padding_until(resolved_offset)
             field_instance = decode_field(field_def, data, env, type_dict,
                                           padding_alignment_bits)
@@ -564,10 +540,10 @@ def decode(
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
                 current_position = (resolved_offset +
-                                    _resolve_size(field_def, env))
+                                    _resolve_info_size(field_def.size, env))
             continue
         # Handle repeated fields
-        current_offset = _resolve_offset(field_def, env)
+        current_offset = _resolve_info_size(field_def.offset, env)
         append_padding_until(current_offset)
         for i in range(field_def.repeat):
             field_def_repeat = _repeated_field_def(field_def, i, current_offset,
@@ -579,7 +555,7 @@ def decode(
                 result.append_field_instance(field_instance)
                 actual_size = field_instance.field_def.size
             else:
-                actual_size = _resolve_size(field_def_repeat, env)
+                actual_size = _resolve_info_size(field_def_repeat.size, env)
             if isinstance(current_offset, InfoSize) and isinstance(
                     actual_size, InfoSize):
                 current_offset += actual_size

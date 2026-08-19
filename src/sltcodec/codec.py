@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sltcalc import SltEval
 from sltcore import Info, InfoSize, bits_get, bits_set
@@ -26,6 +26,58 @@ PRIMITIVE_TYPES = {
 _PRIMITIVE_TYPES = PRIMITIVE_TYPES
 
 _DEFAULT_PADDING_ALIGNMENT_BITS = 32
+
+ProgressCallback = Callable[[float], None]
+
+
+def _notify_progress(progress_callback: ProgressCallback | None,
+                     offset: InfoSize, size: InfoSize, total_bits: int) -> None:
+    """Notify caller of top-level encode/decode progress."""
+    if progress_callback is None or total_bits <= 0:
+        return
+    progress = min((offset + size).bits / total_bits, 1.0)
+    progress_callback(progress)
+
+
+def _estimate_encode_total_bits(struct_instance: StructInstance,
+                                initial_size_bits: int) -> int:
+    """Estimate encoded top-level extent before mutating the output buffer."""
+    env: dict[str, Any] = {}
+    total_bits = max(struct_instance.size.bits, initial_size_bits)
+
+    for field_value in struct_instance.field_instances:
+        field_def = field_value.field_def
+        repeat_until_end = field_def.repeat == "end"
+        repeat = _resolve_repeat(field_def.repeat, env)
+        value = field_value.value
+        if _is_padding_field_def(field_def):
+            padding_size = _resolve_info_size(field_def.size, env)
+            value = bytearray(padding_size.bytes)
+        if repeat_until_end:
+            repeat_values = list(value)
+            repeat = len(repeat_values)
+        if repeat is not None and repeat > 1:
+            current_offset = _resolve_info_size(field_def.offset, env)
+            values = repeat_values if repeat_until_end else list(value)
+
+            for i in range(repeat):
+                field_def_repeat = _repeated_field_def(field_def, i,
+                                                       current_offset,
+                                                       field_def.size)
+                resolved_size = _resolve_info_size(field_def_repeat.size, env)
+                total_bits = max(total_bits,
+                                 (current_offset + resolved_size).bits)
+                env[field_def_repeat.name] = values[i]
+                if isinstance(current_offset, InfoSize):
+                    current_offset += resolved_size
+            continue
+
+        resolved_offset = _resolve_info_size(field_def.offset, env)
+        resolved_size = _resolve_info_size(field_def.size, env)
+        total_bits = max(total_bits, (resolved_offset + resolved_size).bits)
+        env[field_def.name] = value
+
+    return total_bits
 
 
 def _as_field_defs(struct_def: StructDef | list[FieldDef]) -> list[FieldDef]:
@@ -253,12 +305,11 @@ def _prepare_field_info(
             raise TypeError(
                 "Nested StructDef fields must be encoded with StructInstance "
                 "values")
-        nested_bytes = encode(_layout_for_struct_def(value.struct_def,
-                                                     type_dict,
-                                                     name=field_def.name),
-                              value,
-                              bytearray(),
-                              padding_alignment_bits=padding_alignment_bits)
+        nested_bytes = encode(
+            _layout_for_struct_def(value.struct_def,
+                                   type_dict,
+                                   name=field_def.name), value, bytearray(),
+            padding_alignment_bits, None)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
         info = _encode_primitive(resolved_type, value, size, field_def.scale)
@@ -323,6 +374,7 @@ def encode(
     struct_instance: StructInstance,
     buf: bytearray,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
+    progress_callback: ProgressCallback | None = None,
 ) -> bytearray:
     """Encode decode() result into a bytearray.
 
@@ -337,6 +389,9 @@ def encode(
         The base bytearray instance to write into.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
+    progress_callback : Callable[[float], None] | None, optional
+        Called after each top-level field is encoded with progress in the
+        range 0.0 to 1.0. Nested recursive encodes are skipped.
 
     Returns
     -------
@@ -353,6 +408,7 @@ def encode(
     type_dict = struct_layout.type_dict
     env: dict[str, Any] = {}
     has_padding = False
+    total_bits = _estimate_encode_total_bits(struct_instance, len(buf) * 8)
 
     for field_value in struct_instance.field_instances:
         field_def = field_value.field_def
@@ -378,13 +434,19 @@ def encode(
                 resolved_size = _resolve_info_size(field_def_repeat.size, env)
                 encode_field(field_def_repeat, values[i], buf, env, type_dict,
                              padding_alignment_bits)
+                _notify_progress(progress_callback, current_offset,
+                                 resolved_size, total_bits)
                 env[field_def_repeat.name] = values[i]
                 if isinstance(current_offset, InfoSize):
                     current_offset += resolved_size
             continue
 
+        resolved_offset = _resolve_info_size(field_def.offset, env)
+        resolved_size = _resolve_info_size(field_def.size, env)
         encode_field(field_def, value, buf, env, type_dict,
                      padding_alignment_bits)
+        _notify_progress(progress_callback, resolved_offset, resolved_size,
+                         total_bits)
         env[field_def.name] = value
 
     if has_padding and struct_instance.size.bytes > len(buf):
@@ -437,8 +499,12 @@ def decode_field(
         nested_data = bytearray(info.to_bytes)
         if _struct_def_has_dynamic_extent(resolved_type) and offset.bit == 0:
             nested_data = bytearray(data[offset.byte:])
-        nested_value = decode(nested_layout, nested_data,
-                              padding_alignment_bits)
+        nested_value = decode(
+            nested_layout,
+            nested_data,
+            padding_alignment_bits,
+            None,
+        )
         actual_size = nested_value.size
     else:
         actual_size = info.info_size
@@ -507,6 +573,7 @@ def decode(
     struct_layout: StructLayout,
     data: bytearray | bytes,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
+    progress_callback: ProgressCallback | None = None,
 ) -> StructInstance:
     """Decode a bytearray into field values according to a layout.
 
@@ -519,6 +586,9 @@ def decode(
         The data to decode.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
+    progress_callback : Callable[[float], None] | None, optional
+        Called after each top-level field is decoded with progress in the
+        range 0.0 to 1.0. Nested recursive decodes are skipped.
     Returns
     -------
     StructInstance
@@ -604,6 +674,8 @@ def decode(
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
+                _notify_progress(progress_callback, resolved_offset,
+                                 field_instance.field_def.size, data_bits)
                 current_position = (resolved_offset +
                                     _resolve_info_size(field_def.size, env))
             continue
@@ -643,6 +715,8 @@ def decode(
                     env[field_instance.field_def.name] = field_instance.value
                     result.append_field_instance(field_instance)
                     actual_size = field_instance.field_def.size
+                    _notify_progress(progress_callback, current_offset,
+                                     actual_size, data_bits)
                 else:
                     actual_size = resolved_size
 
@@ -688,6 +762,8 @@ def decode(
                 env[field_instance.field_def.name] = field_instance.value
                 result.append_field_instance(field_instance)
                 actual_size = field_instance.field_def.size
+                _notify_progress(progress_callback, current_offset, actual_size,
+                                 data_bits)
             else:
                 actual_size = _resolve_info_size(field_def_repeat.size, env)
             if isinstance(current_offset, InfoSize) and isinstance(

@@ -57,6 +57,22 @@ definition is resolved by `struct_layout.struct_def_name` from
 `struct_layout.type_dict.struct_dict`; enum definitions are resolved from the
 same `TypeDict`.
 
+`encode` and `decode` accept an optional `progress_callback` argument typed as
+`ProgressCallback`. The callback receives a `float` progress value calculated
+from the top-level field extent: `(offset + size) / total_size`. Recursive
+nested structure calls pass `None`, so callers receive progress updates only
+for the top-level encode or decode operation.
+
+```python
+from sltcodec import ProgressCallback, decode
+
+def update_progress(progress: float) -> None:
+    progress_bar.value = progress
+
+progress_callback: ProgressCallback = update_progress
+decoded = decode(layout, data, progress_callback=progress_callback)
+```
+
 Layout persistence uses the explicit names `save_struct_layout` and
 `load_struct_layout`. The former `save_type_dict` and `load_type_dict` API is
 not part of the current public interface.

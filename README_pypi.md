@@ -46,6 +46,26 @@ encoded = encode(layout, instance, bytearray())
 decoded = decode(layout, encoded)
 ```
 
+## Progress Callbacks
+
+`encode` and `decode` accept an optional `progress_callback` argument. The
+callback is typed as `ProgressCallback` and receives a `float` progress value
+from `0.0` to `1.0`.
+
+Progress is calculated for top-level fields as `(offset + size) / total_size`.
+Nested structure encode/decode calls pass `None` internally, so recursive
+fields do not emit additional callback events.
+
+```python
+from sltcodec import ProgressCallback, decode
+
+def update_progress(progress: float) -> None:
+    progress_bar.value = progress
+
+progress_callback: ProgressCallback = update_progress
+decoded = decode(layout, encoded, progress_callback=progress_callback)
+```
+
 `decode` returns a `StructInstance` whose `size` is the actual end of the
 decoded layout. `decode_field` stores the actual decoded size in the returned
 `FieldInstance.field_def.size`. For nested `StructDef` fields, that size comes
@@ -121,6 +141,7 @@ The following symbols are exported by `sltcodec.__all__` in this order:
 | Symbol | Description |
 | --- | --- |
 | `PRIMITIVE_TYPES` | Set of built-in field type names supported by the codec. |
+| `ProgressCallback` | Callable type alias for encode/decode progress updates. |
 | `EnumDef` | Immutable definition of an enumeration. |
 | `EnumDict` | Dictionary-like container for `EnumDef` objects. |
 | `FieldDef` | Immutable definition of one structured field. |
@@ -293,15 +314,16 @@ beginning with `_` are internal helpers and are not part of the public API.
 | Definition | Signature | Description |
 | --- | --- | --- |
 | `PRIMITIVE_TYPES` | `set[str]` | Built-in field type names. |
+| `ProgressCallback` | `Callable[[float], None]` | Progress callback type for top-level encode/decode updates. |
 | `save_struct_layout` | `(struct_layout, path) -> None` | Save a layout to a JSON file. |
 | `load_struct_layout` | `(path) -> StructLayout` | Load a layout from a JSON file. |
 | `save_struct_def_dict` | `(path, struct_def_dict) -> None` | Save a structure-definition dictionary through the layout format. |
 | `load_struct_def_dict` | `(path) -> dict[str, StructDef]` | Load a structure-definition dictionary. |
 | `save_enum_def_dict` | `(path, enum_def_dict) -> None` | Save an enum-definition dictionary through the layout format. |
 | `load_enum_def_dict` | `(path) -> dict[str, EnumDef]` | Load an enum-definition dictionary. |
-| `encode` | `(struct_layout, struct_instance, buf, padding_alignment_bits=32) -> bytearray` | Encode a complete structure. |
+| `encode` | `(struct_layout, struct_instance, buf, padding_alignment_bits=32, progress_callback=None) -> bytearray` | Encode a complete structure. |
 | `decode_field` | `(field_def, data, env=None, type_dict=None, padding_alignment_bits=32) -> FieldInstance \| None` | Decode one field. |
-| `decode` | `(struct_layout, data, padding_alignment_bits=32) -> StructInstance` | Decode a complete structure. |
+| `decode` | `(struct_layout, data, padding_alignment_bits=32, progress_callback=None) -> StructInstance` | Decode a complete structure. |
 
 `save_struct_def_dict`, `load_struct_def_dict`, `save_enum_def_dict`, and
 `load_enum_def_dict` are available from `sltcodec.codec` for dictionary-level

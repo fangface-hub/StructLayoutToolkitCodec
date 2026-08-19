@@ -5,8 +5,8 @@ import pytest
 from sltcore import InfoSize
 
 from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
-                      StructDef, StructInstance, StructLayout, TypeDict, decode,
-                      encode)
+                      ProgressCallback, StructDef, StructInstance, StructLayout,
+                      TypeDict, decode, encode)
 from sltcodec.codec import _resolve_info_size, decode_field
 
 
@@ -42,6 +42,13 @@ def test_primitive_types_are_exposed_at_package_root():
     }
 
 
+def test_progress_callback_type_is_exposed_at_package_root():
+    """Test that ProgressCallback is exposed for external consumers."""
+    progress_callback: ProgressCallback = lambda progress: None
+
+    assert callable(progress_callback)
+
+
 def test_encode_and_decode_round_trip():
     """Test that encoding and then decoding returns the original data."""
     struct_def = [
@@ -73,6 +80,44 @@ def test_encode_and_decode_round_trip():
     ]
     assert encode(layout_for(decoded.struct_def), decoded,
                   bytearray()) == encoded
+
+
+def test_encode_and_decode_progress_callbacks_use_top_level_progress():
+    """Test progress callbacks report top-level encoded/decoded progress."""
+    fields = [
+        FieldDef(name="head",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="tail",
+                 offset=InfoSize(1, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+    ]
+    struct_def = StructDef(fields=fields)
+    struct_instance = StructInstance(
+        struct_def=struct_def,
+        field_instances=[
+            FieldInstance(fields[0], 0x12),
+            FieldInstance(fields[1], 0x34),
+        ],
+    )
+    encode_progress = []
+    decode_progress = []
+
+    encoded = encode(layout_for(struct_def),
+                     struct_instance,
+                     bytearray(),
+                     progress_callback=encode_progress.append)
+    decoded = decode(layout_for(struct_def),
+                     encoded,
+                     progress_callback=decode_progress.append)
+
+    assert encoded == bytearray(b"\x12\x34")
+    assert [field_instance.value
+            for field_instance in decoded.field_instances] == [0x12, 0x34]
+    assert encode_progress == [0.5, 1.0]
+    assert decode_progress == [0.5, 1.0]
 
 
 def test_decode_accepts_struct_layout():
@@ -164,6 +209,33 @@ def test_encode_layout_handles_repeat():
                      size=InfoSize(1, 0),
                      type="unsigned int"), 2),
     ]
+
+
+def test_progress_callbacks_use_repeated_top_level_field_extent():
+    """Test repeated fields report progress against the encoded extent."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         repeat=2)
+    struct_def = StructDef(fields=[field_def])
+    struct_instance = StructInstance(
+        struct_def=struct_def,
+        field_instances=[FieldInstance(field_def, [1, 2])],
+    )
+    encode_progress = []
+    decode_progress = []
+
+    encoded = encode(layout_for(struct_def),
+                     struct_instance,
+                     bytearray(),
+                     progress_callback=encode_progress.append)
+    decode(layout_for([field_def]),
+           encoded,
+           progress_callback=decode_progress.append)
+
+    assert encode_progress == [0.5, 1.0]
+    assert decode_progress == [0.5, 1.0]
 
 
 def test_expression_repeat_uses_previous_field_value():
@@ -361,6 +433,49 @@ def test_encode_recurses_for_nested_field_types():
                 ("left", 3),
                 ("right", 4),
             ]
+
+
+def test_progress_callbacks_skip_nested_recursive_fields():
+    """Test nested recursive encode/decode calls do not report progress."""
+    child_field_defs = [
+        FieldDef(name="left",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="right",
+                 offset=InfoSize(1, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+    ]
+    parent_field_def = FieldDef(name="pair",
+                                offset=InfoSize(0, 0),
+                                size=InfoSize(2, 0),
+                                type=StructDef(fields=child_field_defs))
+    child_instance = StructInstance(
+        struct_def=StructDef(fields=child_field_defs),
+        field_instances=[
+            FieldInstance(child_field_defs[0], 3),
+            FieldInstance(child_field_defs[1], 4),
+        ],
+    )
+    parent_struct_def = StructDef(fields=[parent_field_def])
+    parent_instance = StructInstance(
+        struct_def=parent_struct_def,
+        field_instances=[FieldInstance(parent_field_def, child_instance)],
+    )
+    encode_progress = []
+    decode_progress = []
+
+    encoded = encode(layout_for(parent_struct_def),
+                     parent_instance,
+                     bytearray(),
+                     progress_callback=encode_progress.append)
+    decode(layout_for(parent_struct_def),
+           encoded,
+           progress_callback=decode_progress.append)
+
+    assert encode_progress == [1.0]
+    assert decode_progress == [1.0]
 
 
 def test_decode_field_uses_nested_struct_instance_size():

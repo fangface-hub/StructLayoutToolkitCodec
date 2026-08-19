@@ -288,6 +288,42 @@ def test_struct_def_to_json_from_json_round_trip():
     assert restored == struct_def
 
 
+def test_struct_def_struct_def_name_accessors_use_fields_index():
+    """Test StructDef field accessors grouped by struct_def_name."""
+    nested_struct = StructDef(name="Nested", fields=[])
+    primitive_field = FieldDef(name="value",
+                               offset=InfoSize(0, 0),
+                               size=InfoSize(1, 0),
+                               type="unsigned int")
+    nested_field = FieldDef(name="nested",
+                            offset=InfoSize(1, 0),
+                            size=InfoSize(1, 0),
+                            type=nested_struct)
+    named_nested_a = FieldDef(name="payload_a",
+                              offset=InfoSize(2, 0),
+                              size=InfoSize(1, 0),
+                              type="Payload")
+    named_nested_b = FieldDef(name="payload_b",
+                              offset=InfoSize(3, 0),
+                              size=InfoSize(1, 0),
+                              type="Payload")
+    struct_def = StructDef(fields=[
+        primitive_field,
+        nested_field,
+        named_nested_a,
+        named_nested_b,
+    ])
+
+    assert struct_def.get_field("Nested") == nested_field
+    assert struct_def.get_fields("Payload") == [
+        named_nested_a,
+        named_nested_b,
+    ]
+    assert struct_def.get_field("missing") is None
+    assert struct_def.get_fields("missing") == []
+    assert struct_def.get_fields("unsigned int") == []
+
+
 def test_struct_instance_field_instance_interface():
     """Test StructInstance interface for field_instances operations."""
     field_def_0 = FieldDef(name="b",
@@ -357,6 +393,50 @@ def test_struct_instance_rebuilds_padding_when_field_instances_change():
     ] == ["head", "padding[0]", "tail"]
     assert struct_instance.field_instances[1].is_padding is True
     assert struct_instance.field_instances[1].value == b"\x00"
+
+
+def test_struct_instance_field_def_name_accessors_use_index():
+    """Test accessors return field instances indexed by field_def.name."""
+    field_def_a = FieldDef(name="a",
+                           offset=InfoSize(0, 0),
+                           size=InfoSize(1, 0),
+                           type="unsigned int")
+    field_def_b = FieldDef(name="b",
+                           offset=InfoSize(1, 0),
+                           size=InfoSize(1, 0),
+                           type="unsigned int")
+    struct_instance = StructInstance(
+        struct_def=StructDef(fields=[field_def_a, field_def_b]),
+        field_instances=[
+            FieldInstance(field_def_b, 2),
+            FieldInstance(field_def_a, 1),
+        ],
+    )
+
+    assert struct_instance.get_field("a") == (FieldInstance(field_def_a, 1))
+    assert struct_instance.get_fields("b") == [FieldInstance(field_def_b, 2)]
+    assert struct_instance.get_field("missing") is None
+    assert struct_instance.get_fields("missing") == []
+
+
+def test_struct_instance_field_def_name_index_updates_after_append_and_extend():
+    """Test name index is refreshed after append/extend operations."""
+    field_def_a = FieldDef(name="a",
+                           offset=InfoSize(0, 0),
+                           size=InfoSize(1, 0),
+                           type="unsigned int")
+    field_def_b = FieldDef(name="b",
+                           offset=InfoSize(1, 0),
+                           size=InfoSize(1, 0),
+                           type="unsigned int")
+    struct_instance = StructInstance(struct_def=StructDef(
+        fields=[field_def_a, field_def_b]))
+
+    struct_instance.append_field_instance(FieldInstance(field_def_a, 1))
+    struct_instance.extend_field_instances([FieldInstance(field_def_b, 2)])
+
+    assert struct_instance.get_field("a") == (FieldInstance(field_def_a, 1))
+    assert struct_instance.get_fields("b") == [FieldInstance(field_def_b, 2)]
 
 
 def test_field_instance_sort_uses_field_def_order():

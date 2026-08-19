@@ -10,6 +10,16 @@ from typing import Any, Dict, Iterator, Optional
 from sltcalc import SltEval
 from sltcore import Info, InfoSize
 
+_PRIMITIVE_FIELD_TYPES = {
+    "bool",
+    "signed int",
+    "int",
+    "unsigned int",
+    "float",
+    "bytearray",
+    "bytes",
+}
+
 
 @total_ordering
 @dataclass(frozen=True)
@@ -367,6 +377,16 @@ class StructDef:
         default_factory=list,
         metadata={"desc": "The fields of the structure"},
     )
+    _fields_by_struct_def_name: dict[str, list[FieldDef]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Build field index grouped by referenced struct definition name."""
+        self._rebuild_struct_def_name_index()
 
     def __lt__(self, other: object) -> bool:
         """Compare structure definitions using a stable serialized sort key."""
@@ -382,6 +402,42 @@ class StructDef:
             json.dumps([field.to_dict() for field in self.fields],
                        sort_keys=True),
         )
+
+    def get_fields(self, struct_def_name: str) -> list[FieldDef]:
+        """Return fields that reference the given struct definition name."""
+        self._rebuild_struct_def_name_index()
+        return list(self._fields_by_struct_def_name.get(struct_def_name, []))
+
+    def get_field(self, struct_def_name: str) -> FieldDef | None:
+        """Return the first field that references the given name."""
+        self._rebuild_struct_def_name_index()
+        fields = self._fields_by_struct_def_name.get(struct_def_name)
+        if not fields:
+            return None
+        return fields[0]
+
+    @staticmethod
+    def _field_struct_def_name(field_def: FieldDef) -> str | None:
+        """Resolve struct definition name referenced by a field type."""
+        field_type = field_def.type
+        if isinstance(field_type, StructDef):
+            return field_type.name or None
+        if (isinstance(field_type, str) and field_type
+                and field_type not in _PRIMITIVE_FIELD_TYPES):
+            return field_type
+        return None
+
+    def _rebuild_struct_def_name_index(self) -> None:
+        """Rebuild struct_def_name index from current fields."""
+        fields_by_name: dict[str, list[FieldDef]] = {}
+        for field_def in self.fields:
+            struct_def_name = self._field_struct_def_name(field_def)
+            if struct_def_name is None:
+                continue
+            if struct_def_name not in fields_by_name:
+                fields_by_name[struct_def_name] = []
+            fields_by_name[struct_def_name].append(field_def)
+        object.__setattr__(self, "_fields_by_struct_def_name", fields_by_name)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert this structure definition to JSON-serializable data."""
@@ -432,6 +488,11 @@ class StructInstance:
         default_factory=InfoSize,
         metadata={"desc": "The total size of the structure instance"},
     )
+    _field_instances_by_field_def_name: dict[str, list[FieldInstance]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         """Normalize stored field instances to sorted order."""
@@ -469,6 +530,19 @@ class StructInstance:
         """Return one field instance by index."""
         return self.field_instances[index]
 
+    def get_fields(self, field_def_name: str) -> list[FieldInstance]:
+        """Return field instances that match the given field definition name."""
+        return list(
+            self._field_instances_by_field_def_name.get(field_def_name, []))
+
+    def get_field(self, field_def_name: str) -> FieldInstance | None:
+        """Return the first field instance that matches the given name."""
+        field_instances = self._field_instances_by_field_def_name.get(
+            field_def_name)
+        if not field_instances:
+            return None
+        return field_instances[0]
+
     def __lt__(self, other: object) -> bool:
         """Compare structure instances using a stable serialized sort key."""
         if not isinstance(other, StructInstance):
@@ -490,6 +564,16 @@ class StructInstance:
         """Keep field instances sorted by FieldDef order."""
         self.field_instances.sort()
 
+    def _rebuild_field_def_name_index(self) -> None:
+        """Rebuild field_def.name index from current field instances."""
+        field_instances_by_name: dict[str, list[FieldInstance]] = {}
+        for field_instance in self.field_instances:
+            field_def_name = field_instance.field_def.name
+            if field_def_name not in field_instances_by_name:
+                field_instances_by_name[field_def_name] = []
+            field_instances_by_name[field_def_name].append(field_instance)
+        self._field_instances_by_field_def_name = field_instances_by_name
+
     def _rebuild_padding_field_instances(self) -> None:
         """Rebuild padding field instances for gaps between stored values."""
         non_padding_instances = [
@@ -507,6 +591,7 @@ class StructInstance:
             self.field_instances = non_padding_instances
             self._sort_field_instances()
             self._update_size()
+            self._rebuild_field_def_name_index()
             return
 
         rebuilt_instances: list[FieldInstance] = []
@@ -555,6 +640,7 @@ class StructInstance:
         self.field_instances = rebuilt_instances
         self._sort_field_instances()
         self._update_size()
+        self._rebuild_field_def_name_index()
 
     def _update_size(self) -> None:
         """Update the instance size from the current field layout."""

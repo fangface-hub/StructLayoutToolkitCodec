@@ -152,6 +152,8 @@ def _resolve_byte_swap(field_def: FieldDef, env: dict[str, Any]) -> bool:
 def _resolve_repeat(value: int | str | None, env: dict[str, Any]) -> int | None:
     """Resolve a static or expression-based repeat count."""
     if isinstance(value, str):
+        if value == "end":
+            return None
         return int(SltEval(env).eval(value))
     return value
 
@@ -335,6 +337,7 @@ def encode(
 
     for field_value in struct_instance.field_instances:
         field_def = field_value.field_def
+        repeat_until_end = field_def.repeat == "end"
         repeat = _resolve_repeat(field_def.repeat, env)
         if _is_padding_field_def(field_def):
             has_padding = True
@@ -342,9 +345,12 @@ def encode(
         if _is_padding_field_def(field_def):
             padding_size = _resolve_info_size(field_def.size, env)
             value = bytearray(padding_size.bytes)
+        if repeat_until_end:
+            repeat_values = list(value)
+            repeat = len(repeat_values)
         if repeat is not None and repeat > 1:
             current_offset = _resolve_info_size(field_def.offset, env)
-            values = list(value)
+            values = repeat_values if repeat_until_end else list(value)
 
             for i in range(repeat):
                 field_def_repeat = _repeated_field_def(field_def, i,
@@ -508,6 +514,27 @@ def decode(
     result = StructInstance(struct_def=struct_def_obj)
     current_position = InfoSize(0, 0)
     padding_index = 0
+    stop_due_to_out_of_range = False
+    data_bits = len(data) * 8
+    field_defs = _as_field_defs(struct_def_obj)
+
+    def is_out_of_range(offset: InfoSize, size: InfoSize) -> bool:
+        """Check whether the field range exceeds available input bits."""
+        if size.bits <= 0:
+            return False
+        if offset.bits < 0:
+            return True
+        if offset.bits >= data_bits:
+            return True
+        return offset.bits + size.bits > data_bits
+
+    def append_none_tail(start_index: int, first_field_def: FieldDef) -> None:
+        """Append current and remaining fields with None values."""
+        result.field_instances.append(
+            FieldInstance(field_def=first_field_def, value=None))
+        for tail_field_def in field_defs[start_index + 1:]:
+            result.field_instances.append(
+                FieldInstance(field_def=tail_field_def, value=None))
 
     def append_padding_until(target_offset: InfoSize) -> None:
         nonlocal current_position, padding_index
@@ -537,11 +564,18 @@ def decode(
 
         current_position = target_offset
 
-    for field_def in _as_field_defs(struct_def_obj):
-        repeat = _resolve_repeat(field_def.repeat, env)
+    for field_index, field_def in enumerate(field_defs):
+        repeat_until_end = field_def.repeat == "end"
+        repeat = (None if repeat_until_end else _resolve_repeat(
+            field_def.repeat, env))
         # Handle non-repeated fields
-        if repeat is None or repeat <= 1:
+        if not repeat_until_end and (repeat is None or repeat <= 1):
             resolved_offset = _resolve_info_size(field_def.offset, env)
+            resolved_size = _resolve_info_size(field_def.size, env)
+            if is_out_of_range(resolved_offset, resolved_size):
+                append_none_tail(field_index, field_def)
+                stop_due_to_out_of_range = True
+                break
             append_padding_until(resolved_offset)
             field_instance = decode_field(field_def, data, env, type_dict,
                                           padding_alignment_bits)
@@ -553,10 +587,79 @@ def decode(
             continue
         # Handle repeated fields
         current_offset = _resolve_info_size(field_def.offset, env)
-        append_padding_until(current_offset)
+        if repeat_until_end:
+            stop_decoding = False
+            i = 0
+            while True:
+                if current_offset.bits >= data_bits:
+                    if i == 0:
+                        append_none_tail(
+                            field_index,
+                            _repeated_field_def(field_def, i, current_offset,
+                                                field_def.size),
+                        )
+                        stop_decoding = True
+                    break
+
+                append_padding_until(current_offset)
+
+                field_def_repeat = _repeated_field_def(field_def, i,
+                                                       current_offset,
+                                                       field_def.size)
+                resolved_size = _resolve_info_size(field_def_repeat.size, env)
+                if resolved_size.bits <= 0:
+                    break
+                if is_out_of_range(current_offset, resolved_size):
+                    if i == 0:
+                        append_none_tail(field_index, field_def_repeat)
+                        stop_decoding = True
+                    break
+
+                field_instance = decode_field(field_def_repeat, data, env,
+                                              type_dict, padding_alignment_bits)
+                if field_instance is not None:
+                    env[field_instance.field_def.name] = field_instance.value
+                    result.append_field_instance(field_instance)
+                    actual_size = field_instance.field_def.size
+                else:
+                    actual_size = resolved_size
+
+                if isinstance(current_offset, InfoSize) and isinstance(
+                        actual_size, InfoSize):
+                    current_offset += actual_size
+                    current_position = current_offset
+                i += 1
+            if stop_decoding:
+                stop_due_to_out_of_range = True
+                break
+            continue
+
         for i in range(repeat):
             field_def_repeat = _repeated_field_def(field_def, i, current_offset,
                                                    field_def.size)
+            resolved_size = _resolve_info_size(field_def_repeat.size, env)
+            if is_out_of_range(current_offset, resolved_size):
+                result.field_instances.append(
+                    FieldInstance(field_def=field_def_repeat, value=None))
+                next_offset = current_offset
+                for remaining_index in range(i + 1, repeat):
+                    if isinstance(next_offset, InfoSize):
+                        next_offset += resolved_size
+                    remaining_field_def = _repeated_field_def(
+                        field_def,
+                        remaining_index,
+                        next_offset,
+                        field_def.size,
+                    )
+                    result.field_instances.append(
+                        FieldInstance(field_def=remaining_field_def,
+                                      value=None))
+                for tail_field_def in field_defs[field_index + 1:]:
+                    result.field_instances.append(
+                        FieldInstance(field_def=tail_field_def, value=None))
+                stop_due_to_out_of_range = True
+                break
+            append_padding_until(current_offset)
             field_instance = decode_field(field_def_repeat, data, env,
                                           type_dict, padding_alignment_bits)
             if field_instance is not None:
@@ -569,6 +672,15 @@ def decode(
                     actual_size, InfoSize):
                 current_offset += actual_size
                 current_position = current_offset
+        else:
+            continue
+        break
+
+    if stop_due_to_out_of_range:
+        result._sort_field_instances()
+        result._update_size()
+        result._rebuild_field_def_name_index()
+        return result
 
     actual_size = InfoSize(0, 0)
     for field_instance in result.field_instances:

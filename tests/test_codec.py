@@ -198,6 +198,90 @@ def test_expression_repeat_uses_previous_field_value():
             for instance in decoded.field_instances] == [2, 5, 6, 7]
 
 
+def test_repeat_end_decodes_until_bytearray_end():
+    """Test repeat='end' decodes values until the input bytearray ends."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(0, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         repeat="end")
+
+    decoded = decode(layout_for([field_def]), bytearray(b"\x01\x02\x03"))
+
+    assert [instance.field_def.name
+            for instance in decoded.field_instances] == [
+                "value[0]",
+                "value[1]",
+                "value[2]",
+            ]
+    assert [instance.value for instance in decoded.field_instances] == [1, 2, 3]
+
+
+def test_repeat_end_stops_when_offset_is_out_of_range():
+    """Test repeat='end' stops when next element offset is out of range."""
+    field_def = FieldDef(name="value",
+                         offset=InfoSize(4, 0),
+                         size=InfoSize(1, 0),
+                         type="unsigned int",
+                         repeat="end")
+
+    decoded = decode(layout_for([field_def]), bytearray(b"\x01\x02\x03"))
+
+    assert [instance.field_def.name
+            for instance in decoded.field_instances] == ["value[0]"]
+    assert [instance.value for instance in decoded.field_instances] == [None]
+
+
+def test_decode_out_of_range_sets_current_and_tail_values_to_none():
+    """Test out-of-range decode fills current/tail field values with None."""
+    fields = [
+        FieldDef(name="head",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="far",
+                 offset=InfoSize(10, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="tail",
+                 offset=InfoSize(11, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+    ]
+
+    decoded = decode(layout_for(fields), bytearray(b"\x11"))
+
+    assert [instance.field_def.name
+            for instance in decoded.field_instances] == ["head", "far", "tail"]
+    assert [instance.value
+            for instance in decoded.field_instances] == [17, None, None]
+
+
+def test_decode_out_of_range_skips_following_field_expression_evaluation():
+    """Test out-of-range decode skips evaluating following expressions."""
+    fields = [
+        FieldDef(name="head",
+                 offset=InfoSize(0, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="far",
+                 offset=InfoSize(10, 0),
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+        FieldDef(name="tail",
+                 offset="1 / 0",
+                 size=InfoSize(1, 0),
+                 type="unsigned int"),
+    ]
+
+    decoded = decode(layout_for(fields), bytearray(b"\x11"))
+
+    assert [instance.field_def.name
+            for instance in decoded.field_instances] == ["head", "far", "tail"]
+    assert [instance.value
+            for instance in decoded.field_instances] == [17, None, None]
+
+
 def test_encode_recurses_for_nested_field_types():
     """Test that encoding a field with a nested field type works correctly."""
     child_field_defs = [

@@ -80,6 +80,20 @@ stores the actual size in `FieldInstance.field_def.size`. For nested structures,
 the nested `StructInstance.size` is used; repeated fields advance each next
 offset by the preceding element's actual size.
 
+`FieldDef.repeat` also supports the special string value `"end"`.
+When `repeat="end"`, decoding repeats until the input bytearray ends.
+The decoder stops when the next element offset is out of range or when the
+next element size would exceed the remaining input.
+
+`StructDef` and `StructInstance` provide indexed accessors:
+
+- `get_field(name)`: return the first matching item, or `None`.
+- `get_fields(name)`: return all matching items as a list.
+
+For `StructDef`, these accessors resolve by referenced structure name in
+`FieldDef.type` (non-primitive types only). For `StructInstance`, they resolve
+by `FieldInstance.field_def.name`.
+
 ## Versioning And Release
 
 Version bump scripts are provided for patch, minor, and major releases:

@@ -52,6 +52,11 @@ decoded layout. `decode_field` stores the actual decoded size in the returned
 from the nested `StructInstance.size`; for repeated fields, the next element's
 offset advances by the actual size of the previous element.
 
+`FieldDef.repeat` also accepts the special string value `"end"`. When
+`repeat="end"`, decoding repeats until the input bytearray ends. Decoding
+stops when the next element offset is out of range or when the next element
+size would exceed the remaining input.
+
 ## Field Types
 
 The public `PRIMITIVE_TYPES` set contains:
@@ -163,7 +168,7 @@ internal implementation details and are omitted from the public method tables.
 | `size` | `InfoSize \| str` | Static size or expression. |
 | `type` | `str \| StructDef` | Primitive, named, or nested field type. |
 | `scale` | `float` | Numeric scale applied to the field. |
-| `repeat` | `int \| str \| None` | Number of repeated field values, or an expression that evaluates to the count. |
+| `repeat` | `int \| str \| None` | Number of repeated field values, an expression that evaluates to the count, or `"end"` to decode repeatedly until input end. |
 | `description` | `str \| None` | Optional field description. |
 | `range_expression` | `str \| None` | Optional value-range expression. |
 | `enum_def_name` | `str \| None` | Name of the associated enum definition. |
@@ -203,6 +208,8 @@ internal implementation details and are omitted from the public method tables.
 
 | Method | Description |
 | --- | --- |
+| `get_field(struct_def_name)` | Return the first field whose `type` references the given structure name. |
+| `get_fields(struct_def_name)` | Return all fields whose `type` references the given structure name. |
 | `to_dict()` | Convert the definition to a JSON-compatible dictionary. |
 | `to_json()` | Convert the definition to a JSON string. |
 | `from_dict(data)` | Create a `StructDef` from a dictionary or legacy field list. |
@@ -221,6 +228,8 @@ internal implementation details and are omitted from the public method tables.
 | --- | --- |
 | `append_field_instance(field_instance)` | Append one field instance. |
 | `extend_field_instances(field_instances)` | Append multiple field instances. |
+| `get_field(field_def_name)` | Return the first field instance whose `field_def.name` matches. |
+| `get_fields(field_def_name)` | Return all field instances whose `field_def.name` matches. |
 | `__iter__()` | Iterate over field instances. |
 | `__len__()` | Return the number of field instances. |
 | `__getitem__(index)` | Get a field instance by index. |

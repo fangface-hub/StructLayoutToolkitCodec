@@ -232,6 +232,38 @@ def test_repeat_end_stops_when_offset_is_out_of_range():
     assert [instance.value for instance in decoded.field_instances] == [None]
 
 
+def test_info_size_expression_resolves_constructor():
+    """Test that serialized InfoSize constructors work in expressions."""
+    resolved = _resolve_info_size("InfoSize(1, 0) * count", {"count": 3})
+
+    assert resolved == InfoSize(3, 0)
+
+
+def test_repeat_end_uses_dynamic_nested_struct_size():
+    """Test repeat='end' advances by a variable-size nested structure."""
+    length_field = FieldDef(name="length",
+                            offset=InfoSize(0, 0),
+                            size=InfoSize(1, 0),
+                            type="unsigned int")
+    payload_field = FieldDef(name="payload",
+                             offset=InfoSize(1, 0),
+                             size="InfoSize(1, 0) * length",
+                             type="bytearray")
+    record_field = FieldDef(
+        name="record",
+        offset=InfoSize(0, 0),
+        size=InfoSize(1, 0),
+        type=StructDef(fields=[length_field, payload_field]),
+        repeat="end")
+
+    decoded = decode(layout_for([record_field]), bytearray(b"\x02ab\x01c"))
+
+    assert [instance.field_def.name for instance in decoded.field_instances
+            ] == ["record[0]", "record[1]"]
+    assert [instance.value.size for instance in decoded.field_instances
+            ] == [InfoSize(3, 0), InfoSize(2, 0)]
+
+
 def test_decode_out_of_range_sets_current_and_tail_values_to_none():
     """Test out-of-range decode fills current/tail field values with None."""
     fields = [

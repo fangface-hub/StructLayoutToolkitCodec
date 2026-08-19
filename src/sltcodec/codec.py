@@ -134,8 +134,20 @@ def load_enum_def_dict(path: str | Path) -> dict[str, EnumDef]:
 def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
     """Resolve an InfoSize value that can be static or expression-based."""
     if isinstance(value, str):
-        stleval = SltEval(env)
-        resolved_byte = stleval.eval(value)
+        eval_env = dict(env)
+
+        def replace_info_size(match: re.Match[str]) -> str:
+            name = f"_info_size_{len(eval_env)}"
+            eval_env[name] = InfoSize(int(match.group(1)), int(match.group(2)))
+            return name
+
+        expression = re.sub(
+            r"\bInfoSize\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)",
+            replace_info_size,
+            value,
+        )
+        stleval = SltEval(eval_env)
+        resolved_byte = stleval.eval(expression)
         if isinstance(resolved_byte, InfoSize):
             return resolved_byte
         return InfoSize(resolved_byte, 0)
@@ -162,6 +174,13 @@ def _is_padding_field_def(field_def: FieldDef) -> bool:
     """Check whether a field definition represents padding."""
     return (field_def.name.startswith("padding[")
             and field_def.type in ["bytes", "bytearray"])
+
+
+def _struct_def_has_dynamic_extent(struct_def: StructDef) -> bool:
+    """Check whether a nested structure can consume data beyond its fields."""
+    return any(field_def.repeat == "end" or isinstance(field_def.offset, str)
+               or isinstance(field_def.size, str)
+               for field_def in struct_def.fields)
 
 
 def _validate_padding_alignment_bits(padding_alignment_bits: int) -> None:
@@ -415,7 +434,10 @@ def decode_field(
         nested_layout = _layout_for_struct_def(resolved_type,
                                                type_dict,
                                                name=field_def.name)
-        nested_value = decode(nested_layout, bytearray(info.to_bytes),
+        nested_data = bytearray(info.to_bytes)
+        if _struct_def_has_dynamic_extent(resolved_type) and offset.bit == 0:
+            nested_data = bytearray(data[offset.byte:])
+        nested_value = decode(nested_layout, nested_data,
                               padding_alignment_bits)
         actual_size = nested_value.size
     else:

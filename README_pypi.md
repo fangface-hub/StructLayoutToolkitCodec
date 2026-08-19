@@ -60,7 +60,7 @@ The public `PRIMITIVE_TYPES` set contains:
 {"bool", "signed int", "int", "unsigned int", "float", "bytearray", "bytes"}
 ```
 
-`FieldDef.type` may also be a nested `StructDef` or an expression string. Expressions can use values from previously processed fields, allowing dynamic types and sizes. Repeated fields, byte swapping, padding, ranges, and enum metadata are supported.
+`FieldDef.type` may also be a nested `StructDef` or an expression string. Expressions can use values from previously processed fields, allowing dynamic types, sizes, and repeat counts. Repeated fields, byte swapping, padding, ranges, and enum metadata are supported.
 
 ## Enums And Named Structures
 
@@ -163,7 +163,7 @@ internal implementation details and are omitted from the public method tables.
 | `size` | `InfoSize \| str` | Static size or expression. |
 | `type` | `str \| StructDef` | Primitive, named, or nested field type. |
 | `scale` | `float` | Numeric scale applied to the field. |
-| `repeat` | `int \| None` | Number of repeated field values. |
+| `repeat` | `int \| str \| None` | Number of repeated field values, or an expression that evaluates to the count. |
 | `description` | `str \| None` | Optional field description. |
 | `range_expression` | `str \| None` | Optional value-range expression. |
 | `enum_def_name` | `str \| None` | Name of the associated enum definition. |

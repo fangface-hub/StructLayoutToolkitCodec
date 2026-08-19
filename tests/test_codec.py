@@ -166,6 +166,38 @@ def test_encode_layout_handles_repeat():
     ]
 
 
+def test_expression_repeat_uses_previous_field_value():
+    """Test that repeat expressions are evaluated against the field env."""
+    seed_field = FieldDef(name="count",
+                          offset=InfoSize(0, 0),
+                          size=InfoSize(1, 0),
+                          type="unsigned int")
+    repeated_field = FieldDef(name="value",
+                              offset=InfoSize(1, 0),
+                              size=InfoSize(1, 0),
+                              type="unsigned int",
+                              repeat="count + 1")
+    struct_def = StructDef(fields=[seed_field, repeated_field])
+
+    encoded = encode(
+        layout_for(struct_def),
+        StructInstance(
+            struct_def=struct_def,
+            field_instances=[
+                FieldInstance(seed_field, 2),
+                FieldInstance(repeated_field, [5, 6, 7]),
+            ],
+        ),
+        bytearray(),
+    )
+
+    assert encoded == bytearray(b"\x02\x05\x06\x07")
+    decoded = decode(layout_for(struct_def), encoded)
+
+    assert [instance.value
+            for instance in decoded.field_instances] == [2, 5, 6, 7]
+
+
 def test_encode_recurses_for_nested_field_types():
     """Test that encoding a field with a nested field type works correctly."""
     child_field_defs = [

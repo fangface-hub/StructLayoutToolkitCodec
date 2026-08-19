@@ -39,7 +39,7 @@ def test_field_def_to_json_from_json_round_trip():
                          size=InfoSize(1, 0),
                          type="unsigned int",
                          scale=2.0,
-                         repeat=3,
+                         repeat="count + 1",
                          description="A repeated value",
                          range_expression="0 <= value <= 255",
                          enum_def_name=enum_def.name)
@@ -48,6 +48,7 @@ def test_field_def_to_json_from_json_round_trip():
     restored = FieldDef.from_json(payload)
 
     assert restored == field_def
+    assert restored.repeat == "count + 1"
     assert restored.range_expression == "0 <= value <= 255"
     assert restored.enum_def_name == enum_def.name
     assert restored.to_dict()["enum_def_name"] == "ValueKind"

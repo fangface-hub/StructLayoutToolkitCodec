@@ -98,7 +98,7 @@ class FieldDef:
                                     metadata={"desc": "The type of the field"})
     scale: float = field(default=1.0,
                          metadata={"desc": "The scale of the field"})
-    repeat: int | None = field(
+    repeat: int | str | None = field(
         default=None, metadata={"desc": "The repeat count of the field"})
     description: str | None = field(
         default=None, metadata={"desc": "The description of the field"})
@@ -231,7 +231,7 @@ class FieldDef:
             self.name,
             self._sortable_type(self.type),
             self.scale,
-            -1 if self.repeat is None else self.repeat,
+            self._sortable_repeat(self.repeat),
             "" if self.description is None else self.description,
             "" if self.range_expression is None else self.range_expression,
             "" if self.enum_def_name is None else self.enum_def_name,
@@ -244,6 +244,15 @@ class FieldDef:
         if isinstance(value, InfoSize):
             return (0, value.byte, value.bit)
         return (1, value)
+
+    @staticmethod
+    def _sortable_repeat(value: int | str | None) -> tuple[int, int | str]:
+        """Build a comparable key for static or expression repeat counts."""
+        if value is None:
+            return 0, -1
+        if isinstance(value, int):
+            return 1, value
+        return 2, value
 
     @staticmethod
     def _sortable_type(value: str | "StructDef") -> tuple[Any, ...]:

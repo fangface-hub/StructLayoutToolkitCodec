@@ -149,6 +149,13 @@ def _resolve_byte_swap(field_def: FieldDef, env: dict[str, Any]) -> bool:
     return field_def.byte_swap
 
 
+def _resolve_repeat(value: int | str | None, env: dict[str, Any]) -> int | None:
+    """Resolve a static or expression-based repeat count."""
+    if isinstance(value, str):
+        return int(SltEval(env).eval(value))
+    return value
+
+
 def _is_padding_field_def(field_def: FieldDef) -> bool:
     """Check whether a field definition represents padding."""
     return (field_def.name.startswith("padding[")
@@ -328,17 +335,18 @@ def encode(
 
     for field_value in struct_instance.field_instances:
         field_def = field_value.field_def
+        repeat = _resolve_repeat(field_def.repeat, env)
         if _is_padding_field_def(field_def):
             has_padding = True
         value = field_value.value
         if _is_padding_field_def(field_def):
             padding_size = _resolve_info_size(field_def.size, env)
             value = bytearray(padding_size.bytes)
-        if field_def.repeat is not None and field_def.repeat > 1:
+        if repeat is not None and repeat > 1:
             current_offset = _resolve_info_size(field_def.offset, env)
             values = list(value)
 
-            for i in range(field_def.repeat):
+            for i in range(repeat):
                 field_def_repeat = _repeated_field_def(field_def, i,
                                                        current_offset,
                                                        field_def.size)
@@ -530,8 +538,9 @@ def decode(
         current_position = target_offset
 
     for field_def in _as_field_defs(struct_def_obj):
+        repeat = _resolve_repeat(field_def.repeat, env)
         # Handle non-repeated fields
-        if field_def.repeat is None or field_def.repeat <= 1:
+        if repeat is None or repeat <= 1:
             resolved_offset = _resolve_info_size(field_def.offset, env)
             append_padding_until(resolved_offset)
             field_instance = decode_field(field_def, data, env, type_dict,
@@ -545,7 +554,7 @@ def decode(
         # Handle repeated fields
         current_offset = _resolve_info_size(field_def.offset, env)
         append_padding_until(current_offset)
-        for i in range(field_def.repeat):
+        for i in range(repeat):
             field_def_repeat = _repeated_field_def(field_def, i, current_offset,
                                                    field_def.size)
             field_instance = decode_field(field_def_repeat, data, env,

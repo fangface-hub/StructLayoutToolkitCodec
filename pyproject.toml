@@ -6,7 +6,7 @@ readme = "README_pypi.md"
 requires-python = ">=3.12"
 dependencies = [
     "sltcalc>=1.0.0",
-    "sltcore>=1.5.0",
+    "sltcore>=1.6.0",
 ]
 license = "MIT"
 license-files = ["LICENSE"]

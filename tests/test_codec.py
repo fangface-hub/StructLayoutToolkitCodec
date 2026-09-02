@@ -435,6 +435,37 @@ def test_encode_recurses_for_nested_field_types():
             ]
 
 
+def test_env_is_used_and_inherited_by_nested_encode_and_decode():
+    """Test that the supplied env is available to recursive calls."""
+    child_field = FieldDef(name="value",
+                           offset=InfoSize(0, 0),
+                           size="payload_size",
+                           type="unsigned int")
+    parent_field = FieldDef(name="payload",
+                            offset=InfoSize(0, 0),
+                            size="payload_size",
+                            type=StructDef(fields=[child_field]))
+    child_def = StructDef(fields=[child_field])
+    parent_def = StructDef(fields=[parent_field])
+    instance = StructInstance(
+        struct_def=child_def,
+        field_instances=[FieldInstance(child_field, 0x1234)],
+    )
+    parent_instance = StructInstance(
+        struct_def=parent_def,
+        field_instances=[FieldInstance(parent_field, instance)],
+    )
+
+    encoded = encode(layout_for(parent_def),
+                     parent_instance,
+                     bytearray(),
+                     env={"payload_size": 2})
+    decoded = decode(layout_for(parent_def), encoded, env={"payload_size": 2})
+
+    assert encoded == bytearray(b"\x12\x34")
+    assert decoded.field_instances[0].value.field_instances[0].value == 0x1234
+
+
 def test_progress_callbacks_skip_nested_recursive_fields():
     """Test nested recursive encode/decode calls do not report progress."""
     child_field_defs = [

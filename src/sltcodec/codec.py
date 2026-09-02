@@ -40,9 +40,10 @@ def _notify_progress(progress_callback: ProgressCallback | None,
 
 
 def _estimate_encode_total_bits(struct_instance: StructInstance,
-                                initial_size_bits: int) -> int:
+                                initial_size_bits: int,
+                                env: dict[str, Any] | None = None) -> int:
     """Estimate encoded top-level extent before mutating the output buffer."""
-    env: dict[str, Any] = {}
+    env = dict(env) if env is not None else {}
     total_bits = max(struct_instance.size.bits, initial_size_bits)
 
     for field_value in struct_instance.field_instances:
@@ -309,7 +310,7 @@ def _prepare_field_info(
             _layout_for_struct_def(value.struct_def,
                                    type_dict,
                                    name=field_def.name), value, bytearray(),
-            padding_alignment_bits, None)
+            padding_alignment_bits, None, env)
         info = Info.from_bytes(bytes(nested_bytes), size, scale=field_def.scale)
     else:
         info = _encode_primitive(resolved_type, value, size, field_def.scale)
@@ -375,6 +376,7 @@ def encode(
     buf: bytearray,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
     progress_callback: ProgressCallback | None = None,
+    env: dict[str, Any] | None = None,
 ) -> bytearray:
     """Encode decode() result into a bytearray.
 
@@ -392,6 +394,8 @@ def encode(
     progress_callback : Callable[[float], None] | None, optional
         Called after each top-level field is encoded with progress in the
         range 0.0 to 1.0. Nested recursive encodes are skipped.
+    env : dict[str, Any] | None, optional
+        The environment for evaluating expressions, by default None.
 
     Returns
     -------
@@ -406,9 +410,9 @@ def encode(
         raise ValueError("StructLayout.type_dict is required for encode()")
 
     type_dict = struct_layout.type_dict
-    env: dict[str, Any] = {}
+    env = env if env is not None else {}
     has_padding = False
-    total_bits = _estimate_encode_total_bits(struct_instance, len(buf) * 8)
+    total_bits = _estimate_encode_total_bits(struct_instance, len(buf) * 8, env)
 
     for field_value in struct_instance.field_instances:
         field_def = field_value.field_def
@@ -504,6 +508,7 @@ def decode_field(
             nested_data,
             padding_alignment_bits,
             None,
+            env,
         )
         actual_size = nested_value.size
     else:
@@ -574,6 +579,7 @@ def decode(
     data: bytearray | bytes,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
     progress_callback: ProgressCallback | None = None,
+    env: dict[str, Any] | None = None,
 ) -> StructInstance:
     """Decode a bytearray into field values according to a layout.
 
@@ -589,6 +595,8 @@ def decode(
     progress_callback : Callable[[float], None] | None, optional
         Called after each top-level field is decoded with progress in the
         range 0.0 to 1.0. Nested recursive decodes are skipped.
+    env : dict[str, Any] | None, optional
+        The environment for evaluating expressions, by default None.
     Returns
     -------
     StructInstance
@@ -600,7 +608,7 @@ def decode(
     if struct_layout.type_dict is None:
         raise ValueError("StructLayout.type_dict is required for decode()")
 
-    env = {}
+    env = env if env is not None else {}
     type_dict = struct_layout.type_dict
     struct_def_obj = type_dict.struct_dict[struct_layout.struct_def_name]
     result = StructInstance(struct_def=struct_def_obj)

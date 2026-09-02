@@ -63,6 +63,11 @@ from the top-level field extent: `(offset + size) / total_size`. Recursive
 nested structure calls pass `None`, so callers receive progress updates only
 for the top-level encode or decode operation.
 
+`encode` and `decode` also accept an optional `env` dictionary for evaluating
+expression-based field definitions. The default is `None`, which uses an empty
+environment. The same environment is passed to recursive nested structure
+encode and decode calls.
+
 ```python
 from sltcodec import ProgressCallback, decode
 

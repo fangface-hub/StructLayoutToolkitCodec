@@ -56,6 +56,11 @@ Progress is calculated for top-level fields as `(offset + size) / total_size`.
 Nested structure encode/decode calls pass `None` internally, so recursive
 fields do not emit additional callback events.
 
+`encode` and `decode` also accept an optional `env` dictionary for evaluating
+expression-based field definitions. The default is `None`, which uses an empty
+environment. The same environment is passed to recursive nested structure
+encode and decode calls.
+
 ```python
 from sltcodec import ProgressCallback, decode
 
@@ -321,9 +326,9 @@ beginning with `_` are internal helpers and are not part of the public API.
 | `load_struct_def_dict` | `(path) -> dict[str, StructDef]` | Load a structure-definition dictionary. |
 | `save_enum_def_dict` | `(path, enum_def_dict) -> None` | Save an enum-definition dictionary through the layout format. |
 | `load_enum_def_dict` | `(path) -> dict[str, EnumDef]` | Load an enum-definition dictionary. |
-| `encode` | `(struct_layout, struct_instance, buf, padding_alignment_bits=32, progress_callback=None) -> bytearray` | Encode a complete structure. |
+| `encode` | `(struct_layout, struct_instance, buf, padding_alignment_bits=32, progress_callback=None, env=None) -> bytearray` | Encode a complete structure. `env` provides values for expression evaluation and is inherited by nested encodes. |
 | `decode_field` | `(field_def, data, env=None, type_dict=None, padding_alignment_bits=32) -> FieldInstance \| None` | Decode one field. |
-| `decode` | `(struct_layout, data, padding_alignment_bits=32, progress_callback=None) -> StructInstance` | Decode a complete structure. |
+| `decode` | `(struct_layout, data, padding_alignment_bits=32, progress_callback=None, env=None) -> StructInstance` | Decode a complete structure. `env` provides values for expression evaluation and is inherited by nested decodes. |
 
 `save_struct_def_dict`, `load_struct_def_dict`, `save_enum_def_dict`, and
 `load_enum_def_dict` are available from `sltcodec.codec` for dictionary-level

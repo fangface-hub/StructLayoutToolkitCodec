@@ -65,16 +65,16 @@ wheels = [
 
 [[package]]
 name = "sltcalc"
-version = "1.0.0"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b5/01/19db81d0e1f1330ab884abf282569b3f05ffe1f2c7b8aff910125295d4be/sltcalc-1.0.0.tar.gz", hash = "sha256:968053bbecc85c30caf5ddfd48962e409c7844ccfc441418d029a4f743030350", size = 10499, upload-time = "2026-08-18T14:38:14.052Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/c3/dc537c72c091e131d1e44da7a9abe06b2911736fcb8908025fbfb0eb42fa/sltcalc-1.1.0.tar.gz", hash = "sha256:2009b1f3edf5016598dde87ae4b95100db24f7ff61e78278cd2cbdb6e7177401", size = 10565, upload-time = "2026-09-13T13:42:35.77Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/77/6d03b5c160ffe42bee2fdabdd46521033794fb02e8975b4da7a1f1c641de/sltcalc-1.0.0-py3-none-any.whl", hash = "sha256:12531fef9633b25e6743c4a41873971c83dffb763590f42e2f1f78accea08088", size = 4824, upload-time = "2026-08-18T14:38:13.247Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/39/e2a2cd3ba0aeb63ea7b277b2f4a2cad7b93a748ad024d407a21492a82375/sltcalc-1.1.0-py3-none-any.whl", hash = "sha256:16f15c950b23ea085ea2eaed9c63362dec0aaaf1b9b03e550725f473a8cd3d6c", size = 4841, upload-time = "2026-09-13T13:42:35.008Z" },
 ]
 
 [[package]]
 name = "sltcodec"
-version = "2.5.1"
+version = "2.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "sltcalc" },
@@ -88,8 +88,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "sltcalc", specifier = ">=1.0.0" },
-    { name = "sltcore", specifier = ">=1.7.0" },
+    { name = "sltcalc", specifier = ">=1.1.0" },
+    { name = "sltcore", specifier = ">=1.6.0" },
 ]
 
 [package.metadata.requires-dev]

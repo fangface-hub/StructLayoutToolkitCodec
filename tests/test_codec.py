@@ -7,7 +7,9 @@ from sltcore import InfoSize
 from sltcodec import (PRIMITIVE_TYPES, EnumDef, FieldDef, FieldInstance,
                       ProgressCallback, StructDef, StructInstance, StructLayout,
                       TypeDict, decode, encode)
-from sltcodec.codec import _resolve_info_size, decode_field
+from sltcodec import codec as codec_module
+from sltcodec.codec import (_notify_progress, _resolve_info_size,
+                           decode_field)
 
 
 def layout_for(struct_def):
@@ -968,3 +970,37 @@ def test_encode_without_padding_does_not_extend_buf_to_struct_size():
 
     assert encoded is buf
     assert encoded == bytearray(b"\x7f\x00\x00\x00")
+
+
+def _run_notify(monkeypatch, steps):
+    """Feed (time, bits) steps through _notify_progress; return reported."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(codec_module.time, "monotonic", lambda: clock["now"])
+    reported = []
+    state = {}
+    for now, bits in steps:
+        clock["now"] = now
+        _notify_progress(reported.append, state, InfoSize(0, 0),
+                         InfoSize(0, bits), 10000)
+    return reported
+
+
+def test_notify_progress_throttles_by_progress_delta(monkeypatch):
+    """Test small changes within 100 ms are skipped, >0.01 changes pass."""
+    reported = _run_notify(monkeypatch, [(0.0, 100), (0.01, 150),
+                                         (0.02, 300), (0.03, 301),
+                                         (0.04, 500)])
+    assert reported == [0.01, 0.03, 0.05]
+
+
+def test_notify_progress_throttles_by_time(monkeypatch):
+    """Test tiny changes are reported once 100 ms have elapsed."""
+    reported = _run_notify(monkeypatch, [(0.0, 100), (0.05, 101),
+                                         (0.1, 102), (0.15, 103)])
+    assert reported == [0.01, 0.0102]
+
+
+def test_notify_progress_always_reports_completion(monkeypatch):
+    """Test 1.0 is reported even if throttling conditions are not met."""
+    reported = _run_notify(monkeypatch, [(0.0, 9995), (0.01, 10000)])
+    assert reported == [0.9995, 1.0]

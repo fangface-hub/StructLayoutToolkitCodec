@@ -89,7 +89,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "sltcalc", specifier = ">=1.1.0" },
-    { name = "sltcore", specifier = ">=1.6.0" },
+    { name = "sltcore", specifier = ">=1.7.0" },
 ]
 
 [package.metadata.requires-dev]

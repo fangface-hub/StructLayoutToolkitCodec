@@ -338,6 +338,75 @@ def test_repeat_end_uses_dynamic_nested_struct_size():
             ] == [InfoSize(3, 0), InfoSize(2, 0)]
 
 
+def test_dynamic_nested_decode_uses_zero_copy_tail_views():
+    """Dynamic nested fields must not copy the remaining input bytes."""
+    class SliceTrackingBytearray(bytearray):
+        def __init__(self, value):
+            super().__init__(value)
+            self.tail_slice_bytes = 0
+
+        def __getitem__(self, key):
+            if isinstance(key, slice) and key.stop is None:
+                self.tail_slice_bytes += len(self) - (key.start or 0)
+            return super().__getitem__(key)
+
+    length_field = FieldDef(name="length",
+                            offset=InfoSize(0, 0),
+                            size=InfoSize(1, 0),
+                            type="unsigned int")
+    payload_field = FieldDef(name="payload",
+                             offset=InfoSize(1, 0),
+                             size="InfoSize(1, 0) * length",
+                             type="bytearray")
+    record_field = FieldDef(
+        name="record",
+        offset=InfoSize(0, 0),
+        size=InfoSize(1, 0),
+        type=StructDef(fields=[length_field, payload_field]),
+        repeat="end")
+    data = SliceTrackingBytearray(b"\x02ab\x01c")
+
+    decoded = decode(layout_for([record_field]), data)
+
+    assert [field.value.get_field("payload").value
+            for field in decoded.field_instances] == [b"ab", b"c"]
+    assert data.tail_slice_bytes == 0
+
+
+def test_repeat_end_batches_instance_padding_rebuilds(monkeypatch):
+    """Repeated decoding rebuilds instance indexes once, not per field."""
+    record_count = 40
+    length_field = FieldDef(name="length",
+                            offset=InfoSize(0, 0),
+                            size=InfoSize(1, 0),
+                            type="unsigned int")
+    payload_field = FieldDef(name="payload",
+                             offset=InfoSize(1, 0),
+                             size="InfoSize(1, 0) * length",
+                             type="bytearray")
+    record_field = FieldDef(
+        name="record",
+        offset=InfoSize(0, 0),
+        size=InfoSize(1, 0),
+        type=StructDef(fields=[length_field, payload_field]),
+        repeat="end")
+    original_rebuild = StructInstance._rebuild_padding_field_instances
+    rebuild_count = 0
+
+    def count_rebuilds(instance):
+        nonlocal rebuild_count
+        rebuild_count += 1
+        original_rebuild(instance)
+
+    monkeypatch.setattr(StructInstance, "_rebuild_padding_field_instances",
+                        count_rebuilds)
+    decoded = decode(layout_for([record_field]),
+                     bytearray((2, 65, 66)) * record_count)
+
+    assert len(decoded.field_instances) == record_count
+    assert rebuild_count <= record_count * 2 + 2
+
+
 def test_decode_out_of_range_sets_current_and_tail_values_to_none():
     """Test out-of-range decode fills current/tail field values with None."""
     fields = [

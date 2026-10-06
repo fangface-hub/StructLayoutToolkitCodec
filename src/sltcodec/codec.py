@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sltcalc import SltEval
-from sltcore import Info, InfoSize, bits_get, bits_set
+from sltcore import Info, InfoSize, bits_get, bits_set, virtual_bytearray
 
 from .types import (EnumDef, FieldDef, FieldInstance, StructDef, StructInstance,
                     StructLayout, TypeDict)
@@ -35,8 +35,8 @@ _PROGRESS_MIN_DELTA = 0.01
 
 
 def _notify_progress(progress_callback: ProgressCallback | None,
-                     progress_state: dict[str, float],
-                     offset: InfoSize, size: InfoSize, total_bits: int) -> None:
+                     progress_state: dict[str, float], offset: InfoSize,
+                     size: InfoSize, total_bits: int) -> None:
     """Notify caller of top-level encode/decode progress.
 
     Calls are throttled: the callback fires on the first call, at most once
@@ -50,13 +50,13 @@ def _notify_progress(progress_callback: ProgressCallback | None,
     now = time.monotonic()
     last_time = progress_state.get("time")
     if (last_time is not None and progress < 1.0
-            and now - last_time < _PROGRESS_MIN_INTERVAL_SEC
-            and abs(progress - progress_state["progress"]) <=
-            _PROGRESS_MIN_DELTA):
+            and now - last_time < _PROGRESS_MIN_INTERVAL_SEC and
+            abs(progress - progress_state["progress"]) <= _PROGRESS_MIN_DELTA):
         return
     progress_state["time"] = now
     progress_state["progress"] = progress
     progress_callback(progress)
+
 
 def _estimate_encode_total_bits(struct_instance: StructInstance,
                                 initial_size_bits: int,
@@ -458,8 +458,8 @@ def encode(
                 resolved_size = _resolve_info_size(field_def_repeat.size, env)
                 encode_field(field_def_repeat, values[i], buf, env, type_dict,
                              padding_alignment_bits)
-                _notify_progress(progress_callback, progress_state, current_offset,
-                                 resolved_size, total_bits)
+                _notify_progress(progress_callback, progress_state,
+                                 current_offset, resolved_size, total_bits)
                 env[field_def_repeat.name] = values[i]
                 if isinstance(current_offset, InfoSize):
                     current_offset += resolved_size
@@ -469,8 +469,8 @@ def encode(
         resolved_size = _resolve_info_size(field_def.size, env)
         encode_field(field_def, value, buf, env, type_dict,
                      padding_alignment_bits)
-        _notify_progress(progress_callback, progress_state, resolved_offset, resolved_size,
-                         total_bits)
+        _notify_progress(progress_callback, progress_state, resolved_offset,
+                         resolved_size, total_bits)
         env[field_def.name] = value
 
     if has_padding and struct_instance.size.bytes > len(buf):
@@ -481,18 +481,18 @@ def encode(
 
 def decode_field(
     field_def: FieldDef,
-    data: bytearray | bytes,
+    data: bytearray | bytes | virtual_bytearray,
     env: dict[str, Any] | None = None,
     type_dict: TypeDict | None = None,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
 ) -> FieldInstance | None:
-    """Decode a single field from a bytearray according to a field definition.
+    """Decode a single field from a byte sequence according to a field definition.
 
     Parameters
     ----------
     field_def : FieldDef
         The definition of the field to decode.
-    data : bytearray | bytes
+    data : bytearray | bytes | virtual_bytearray
         The data to decode.
     env : dict[str, Any] | None, optional
         The environment for evaluating expressions, by default None.
@@ -522,7 +522,9 @@ def decode_field(
                                                name=field_def.name)
         nested_data = bytearray(info.to_bytes)
         if _struct_def_has_dynamic_extent(resolved_type) and offset.bit == 0:
-            nested_data = bytearray(data[offset.byte:])
+            source = (data if isinstance(data, virtual_bytearray) else
+                      virtual_bytearray([data]))
+            nested_data = source[offset.byte:]
         nested_value = decode(
             nested_layout,
             nested_data,
@@ -596,19 +598,19 @@ def _layout_for_struct_def(struct_def: StructDef,
 
 def decode(
     struct_layout: StructLayout,
-    data: bytearray | bytes,
+    data: bytearray | bytes | virtual_bytearray,
     padding_alignment_bits: int = _DEFAULT_PADDING_ALIGNMENT_BITS,
     progress_callback: ProgressCallback | None = None,
     env: dict[str, Any] | None = None,
 ) -> StructInstance:
-    """Decode a bytearray into field values according to a layout.
+    """Decode a byte sequence into field values according to a layout.
 
     Parameters
     ----------
     struct_layout : StructLayout
         A layout bundle that resolves the root structure via
         ``struct_layout.type_dict.struct_dict[struct_layout.struct_def_name]``.
-    data : bytearray | bytes
+    data : bytearray | bytes | virtual_bytearray
         The data to decode.
     padding_alignment_bits : int, optional
         The padding alignment boundary in bits, by default 32.
@@ -631,7 +633,7 @@ def decode(
     progress_state: dict[str, float] = {}
     env = env if env is not None else {}
     type_dict = struct_layout.type_dict
-    struct_def_obj =  type_dict.struct_dict[struct_layout.struct_def_name]
+    struct_def_obj = type_dict.struct_dict[struct_layout.struct_def_name]
     result = StructInstance(struct_def=struct_def_obj)
     current_position = InfoSize(0, 0)
     padding_index = 0
@@ -679,7 +681,7 @@ def decode(
             )
             padding_field_instance = decode_field(padding_field_def, data)
             if padding_field_instance is not None:
-                result.append_field_instance(padding_field_instance)
+                result.field_instances.append(padding_field_instance)
             padding_index += 1
             chunk_start_bits = chunk_end_bits
 
@@ -702,9 +704,10 @@ def decode(
                                           padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
-                result.append_field_instance(field_instance)
-                _notify_progress(progress_callback, progress_state, resolved_offset,
-                                 field_instance.field_def.size, data_bits)
+                result.field_instances.append(field_instance)
+                _notify_progress(progress_callback, progress_state,
+                                 resolved_offset, field_instance.field_def.size,
+                                 data_bits)
                 current_position = (resolved_offset +
                                     _resolve_info_size(field_def.size, env))
             continue
@@ -742,10 +745,10 @@ def decode(
                                               type_dict, padding_alignment_bits)
                 if field_instance is not None:
                     env[field_instance.field_def.name] = field_instance.value
-                    result.append_field_instance(field_instance)
+                    result.field_instances.append(field_instance)
                     actual_size = field_instance.field_def.size
-                    _notify_progress(progress_callback, progress_state, current_offset,
-                                     actual_size, data_bits)
+                    _notify_progress(progress_callback, progress_state,
+                                     current_offset, actual_size, data_bits)
                 else:
                     actual_size = resolved_size
 
@@ -789,10 +792,10 @@ def decode(
                                           type_dict, padding_alignment_bits)
             if field_instance is not None:
                 env[field_instance.field_def.name] = field_instance.value
-                result.append_field_instance(field_instance)
+                result.field_instances.append(field_instance)
                 actual_size = field_instance.field_def.size
-                _notify_progress(progress_callback, progress_state, current_offset, actual_size,
-                                 data_bits)
+                _notify_progress(progress_callback, progress_state,
+                                 current_offset, actual_size, data_bits)
             else:
                 actual_size = _resolve_info_size(field_def_repeat.size, env)
             if isinstance(current_offset, InfoSize) and isinstance(
@@ -819,6 +822,7 @@ def decode(
                 actual_size = field_end
     result.size = actual_size
     append_padding_until(result.size)
+    result._rebuild_padding_field_instances()
 
     return result
 

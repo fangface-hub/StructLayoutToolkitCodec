@@ -206,6 +206,11 @@ def load_enum_def_dict(path: str | Path) -> dict[str, EnumDef]:
 def _resolve_info_size(value: InfoSize | str, env: dict[str, Any]) -> InfoSize:
     """Resolve an InfoSize value that can be static or expression-based."""
     if isinstance(value, str):
+        if "InfoSize" not in value:
+            result = SltEval(env).eval(value)
+            if isinstance(result, InfoSize):
+                return result
+            return InfoSize(result, 0)
         eval_env = dict(env)
 
         def replace_info_size(match: re.Match[str]) -> str:
@@ -342,7 +347,7 @@ def _repeated_field_def(field_def: FieldDef, index: int, offset: InfoSize,
     repeated_name = f"{field_def.name}[{index}]"
 
     def replace_name(value: Any) -> Any:
-        if not isinstance(value, str):
+        if not isinstance(value, str) or field_def.name not in value:
             return value
         pattern = (rf"(?<![0-9A-Za-z_]){re.escape(field_def.name)}"
                    rf"(?![0-9A-Za-z_])")

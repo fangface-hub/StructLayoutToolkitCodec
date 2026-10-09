@@ -125,6 +125,15 @@ class FieldDef:
         """Compare field definitions using a stable serialized sort key."""
         if not isinstance(other, FieldDef):
             return NotImplemented
+        # Compare the cheap leading key parts first; the full key (which
+        # may serialize nested structures) is only built on a tie.
+        head = (self._sortable_info_size_or_expr(self.offset),
+                self._sortable_info_size_or_expr(self.size), self.name)
+        other_head = (self._sortable_info_size_or_expr(other.offset),
+                      self._sortable_info_size_or_expr(other.size),
+                      other.name)
+        if head != other_head:
+            return head < other_head
         return self._sort_key() < other._sort_key()
 
     def to_dict(self) -> dict[str, Any]:
